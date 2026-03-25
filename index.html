@@ -213,6 +213,187 @@
                 </div>
             </div>
         </div>
+        <div class="topic" id="topic-1">
+            <div class="topic-badge">02 · Foundation</div>
+            <h2 class="topic-title">Real Mode</h2>
+            <p class="topic-subtitle">The CPU's initial operating mode. 16-bit registers, segmented addressing, 1MB
+                address
+                space. Where you start.</p>
+
+            <h3>What Real Mode Actually Is</h3>
+            <p>When your CPU boots, it starts in <strong>real mode</strong> — the mode where the CPU behaves essentially
+                like an 8086 from 1978. No memory protection. No privilege levels. No paging. Any code can read or write
+                any
+                memory, including the IVT and BIOS data area. It's raw hardware access.</p>
+            <p>You have 16-bit registers and you can only directly address <strong>1 MB</strong> of memory. The reason
+                for
+                this limit: the address bus on the original 8086 was 20 bits wide. 2²⁰ = 1,048,576 bytes = 1 MB. Modern
+                CPUs
+                still start in this mode for backward compatibility.</p>
+
+            <h3>Registers in Real Mode</h3>
+            <table class="reg-table">
+                <tr>
+                    <th>Register(s)</th>
+                    <th>Name</th>
+                    <th>Width</th>
+                    <th>Purpose</th>
+                </tr>
+                <tr>
+                    <td class="rname">AX, BX, CX, DX</td>
+                    <td>General Purpose</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">Arithmetic, data. Split into AH/AL, BH/BL etc. AX=accumulator, CX=counter,
+                        DX=data/I/O, BX=base.</td>
+                </tr>
+                <tr>
+                    <td class="rname">SI, DI</td>
+                    <td>Index</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">Source Index, Destination Index. Used for string ops (MOVSB, LODSB etc.).</td>
+                </tr>
+                <tr>
+                    <td class="rname">BP, SP</td>
+                    <td>Pointer</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">Base Pointer and Stack Pointer. BP references stack frame, SP tracks top of stack.
+                    </td>
+                </tr>
+                <tr>
+                    <td class="rname">CS, DS, ES, SS</td>
+                    <td>Segment</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">Code, Data, Extra, Stack segments. Define 64KB windows into memory.</td>
+                </tr>
+                <tr>
+                    <td class="rname">IP</td>
+                    <td>Instruction Pointer</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">Offset within CS segment. You can't directly write IP — only JMP/CALL/RET affect
+                        it.
+                    </td>
+                </tr>
+                <tr>
+                    <td class="rname">FLAGS</td>
+                    <td>Flags Register</td>
+                    <td>16-bit</td>
+                    <td class="rdesc">CF (carry), ZF (zero), SF (sign), OF (overflow), IF (interrupt enable), DF
+                        (direction).</td>
+                </tr>
+            </table>
+
+            <h3>Segmented Addressing: The Core Mechanic</h3>
+            <p>Real mode uses a <strong>segment:offset</strong> addressing scheme. Physical address is computed as:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">formula</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre>Physical Address = (Segment × 16) + Offset
+                   = (Segment &lt;&lt; 4) + Offset</pre>
+            </div>
+
+            <p>Segment is shifted left by 4 bits (multiplied by 16), then the offset is added. Both are 16-bit values.
+                The
+                result is a 20-bit physical address.</p>
+            <p>Example: <code>CS = 0x07C0</code>, <code>IP = 0x0000</code> → Physical =
+                <code>0x07C0 × 16 + 0 = 0x07C00</code>. This is why the BIOS often jumps to <code>0x07C0:0x0000</code> —
+                same physical address as <code>0x0000:0x7C00</code>.
+            </p>
+
+            <div class="callout warn">
+                <strong>Aliasing alert:</strong> Multiple segment:offset pairs map to the same physical address.
+                <code>0x0000:0x7C00</code>, <code>0x07C0:0x0000</code>, and <code>0x07B0:0x0100</code> all point to
+                physical
+                <code>0x7C00</code>. This matters when you call far procedures or rely on CS for data access.
+            </div>
+
+            <h3>Stack in Real Mode</h3>
+            <p>The stack uses <code>SS:SP</code>. The x86 stack grows <strong>downward</strong>. <code>PUSH</code>
+                decrements SP by 2 then writes. <code>POP</code> reads then increments. You need to set up your own
+                stack —
+                the BIOS gives you one but you shouldn't rely on it. Common setup:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · real mode stack setup</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Set up stack at 0x0000:0x7BFF (just below our code)</span>
+<span class="kw">cli</span>                         <span class="cmt">; Disable interrupts during stack setup</span>
+<span class="kw">xor</span>  <span class="reg">ax</span>, <span class="reg">ax</span>
+<span class="kw">mov</span>  <span class="reg">ss</span>, <span class="reg">ax</span>               <span class="cmt">; SS = 0x0000</span>
+<span class="kw">mov</span>  <span class="reg">sp</span>, <span class="num">0x7C00</span>            <span class="cmt">; SP = 0x7C00 — stack grows down from here</span>
+<span class="kw">sti</span>                         <span class="cmt">; Re-enable interrupts</span></pre>
+            </div>
+
+            <h3>Real Mode Limitations</h3>
+            <ul>
+                <li><strong>Max 1 MB addressable</strong> — 20-bit address bus. Segment 0xFFFF + offset 0xFFFF =
+                    0x10FFEF
+                    (wraps around!)</li>
+                <li><strong>No memory protection</strong> — all code runs at the same privilege level. Any bug can
+                    overwrite
+                    interrupt vectors.</li>
+                <li><strong>No multitasking</strong> — single flat execution context.</li>
+                <li><strong>Max 64 KB per segment</strong> — 16-bit offset. You need multiple segments to access more.
+                </li>
+                <li><strong>BIOS interrupts only</strong> — the only way to talk to hardware (disk, video) is via BIOS
+                    INT
+                    calls.</li>
+            </ul>
+
+            <h3>A Minimal Real Mode Program</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · minimal bootloader skeleton</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 16]</span>
+<span class="dir">[ORG 0x7C00]</span>
+
+<span class="lbl">start:</span>
+    <span class="cmt">; Clear segment registers — BIOS may leave them dirty</span>
+    <span class="kw">cli</span>
+    <span class="kw">xor</span>  <span class="reg">ax</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>  <span class="reg">ds</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>  <span class="reg">es</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>  <span class="reg">ss</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>  <span class="reg">sp</span>, <span class="num">0x7C00</span>
+    <span class="kw">sti</span>
+
+    <span class="cmt">; Print a character using BIOS INT 10h</span>
+    <span class="kw">mov</span>  <span class="reg">ah</span>, <span class="num">0x0E</span>        <span class="cmt">; TTY output function</span>
+    <span class="kw">mov</span>  <span class="reg">al</span>, <span class="str">'!'</span>
+    <span class="kw">int</span>  <span class="num">0x10</span>
+
+<span class="lbl">.halt:</span>
+    <span class="kw">hlt</span>
+    <span class="kw">jmp</span>  <span class="lbl">.halt</span>          <span class="cmt">; Loop in case of NMI waking us</span>
+
+<span class="cmt">; Padding and boot signature</span>
+<span class="dir">times 510 - ($ - $$) db 0</span>
+<span class="dir">dw 0xAA55</span>              <span class="cmt">; Note: little-endian, stored as 55 AA on disk</span></pre>
+            </div>
+
+            <div class="callout info">
+                <strong>ORG directive:</strong> <code>[ORG 0x7C00]</code> tells NASM that this code will be loaded at
+                offset
+                0x7C00. It doesn't move anything — it just adjusts address calculations for labels so
+                <code>jmp label</code>
+                generates the correct address.
+            </div>
+        </div>
 </body>
 
 </html>
