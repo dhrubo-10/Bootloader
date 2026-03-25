@@ -52,6 +52,167 @@
                 <button class="pn-btn" onclick="navigate(1)">next →</button>
             </div>
         </div>
+
+        <div class="topic active" id="topic-0">
+            <div class="topic-badge">01 · Foundation</div>
+            <h2 class="topic-title">The Boot Process</h2>
+            <p class="topic-subtitle">What actually happens between pressing the power button and your OS running. Every
+                layer, no hand-waving.</p>
+
+            <h3>Power-On: The First Instruction</h3>
+            <p>The moment power is applied, the CPU is in a known, hard-wired state. On x86, the instruction pointer
+                <code>CS:IP</code> is set to <strong><code>0xFFFF:0x0000</code></strong>, which in 16-bit real mode
+                resolves to physical address <strong><code>0xFFFF0</code></strong>. That's 16 bytes below the top of the
+                first megabyte of address space.
+            </p>
+            <p>At that address sits a <strong>JMP instruction</strong> — placed there by your motherboard firmware (BIOS
+                or UEFI). It jumps to the actual firmware code, typically somewhere in the high flash ROM. The CPU has
+                no idea what OS you're running. It doesn't care. It just executes the instruction at that address.</p>
+
+            <div class="callout info">
+                <strong>Why 0xFFFF0?</strong> After a reset, the CPU drives CS to 0xF000 with an internal base of
+                0xFFFF0000 (in 80386+). The real mode segment:offset pair 0xFFFF:0x0000 evaluates to 0xFFFF0. The first
+                instructions are in ROM — ROM that exists at the top of the 1MB + a bit of extended space.
+            </div>
+
+            <h3>POST (Power-On Self Test)</h3>
+            <p>Before anything useful happens, the BIOS runs POST. It's not magic — it's just a checklist:</p>
+            <ul>
+                <li>Test CPU registers and basic instruction execution</li>
+                <li>Verify CMOS checksum (BIOS settings stored in battery-backed SRAM)</li>
+                <li>Initialize the memory controller and test RAM (that memory count you used to watch tick up)</li>
+                <li>Initialize buses: PCI, PCIe, USB</li>
+                <li>Enumerate and initialize hardware: IDE, SATA, NVMe controllers</li>
+                <li>Set up the <strong>Interrupt Vector Table (IVT)</strong> at address <code>0x0000</code></li>
+            </ul>
+
+            <h3>The Boot Device Search</h3>
+            <p>After POST, the BIOS checks its configured boot order. It looks for a <strong>bootable device</strong>.
+                For a disk, "bootable" is brutally simple: read the first 512 bytes. If the last two bytes are
+                <code>0x55</code> and <code>0xAA</code> — it's bootable. That's it. That's the entire check.
+            </p>
+
+            <div class="callout warn">
+                <strong>The 0x55AA signature</strong> is at bytes 510 and 511 (0-indexed), i.e., the last two bytes of
+                the 512-byte sector. The BIOS loads those 512 bytes to address <code>0x7C00</code> and jumps to it. Your
+                bootloader now has control.
+            </div>
+
+            <h3>Why 0x7C00?</h3>
+            <p>The BIOS loads your MBR to physical address <code>0x7C00</code>. Why this specific address? Historical
+                accident. On the IBM PC (8088, 1981), this was the highest point where a 512-byte bootloader could live
+                without overwriting itself or the BIOS data area, while still leaving the first 32KB for the OS. The
+                original PC had 32KB of usable RAM. <strong>0x7C00 = 0x8000 - 0x0200 (512 bytes)</strong>.</p>
+
+            <h3>The Full Boot Sequence</h3>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <div class="step-title">CPU Reset</div>
+                        <div class="step-desc">CPU sets <code>CS:IP = 0xFFFF:0x0000</code>. All registers zeroed or set
+                            to known state. Cache flushed.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <div class="step-title">BIOS/Firmware executes</div>
+                        <div class="step-desc">JMP at 0xFFFF0 takes us to firmware. POST runs, hardware initialized, IVT
+                            populated at 0x0000.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <div class="step-title">Boot device selected</div>
+                        <div class="step-desc">First 512 bytes of boot device read. <code>0x55AA</code> signature
+                            verified.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">4</div>
+                    <div class="step-content">
+                        <div class="step-title">MBR loaded to 0x7C00</div>
+                        <div class="step-desc">BIOS does <code>JMP 0x0000:0x7C00</code>. We're in 16-bit real mode. CPU
+                            hands off to your code.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">5</div>
+                    <div class="step-content">
+                        <div class="step-title">Stage 1 Bootloader</div>
+                        <div class="step-desc">MBR code (≤446 bytes usable) loads a larger Stage 2 from disk. Stage 2
+                            has room to breathe.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">6</div>
+                    <div class="step-content">
+                        <div class="step-title">Stage 2: The real work</div>
+                        <div class="step-desc">Enable A20. Set up GDT. Switch to protected mode. Build page tables.
+                            Enter long mode.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">7</div>
+                    <div class="step-content">
+                        <div class="step-title">Kernel entry</div>
+                        <div class="step-desc">Parse ELF. Load segments. Pass boot information (memory map). Jump to
+                            kernel's entry point.</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Memory Layout at Boot</h3>
+            <div class="mem-map">
+                <div class="mem-row header">
+                    <div>Address</div>
+                    <div>Size</div>
+                    <div>Contents</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00000</div>
+                    <div class="mem-size">1 KB</div>
+                    <div class="mem-desc">IVT — 256 interrupt vectors (4 bytes each: seg:off)</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00400</div>
+                    <div class="mem-size">256 B</div>
+                    <div class="mem-desc">BDA — BIOS Data Area (hardware state, timers, etc.)</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00500</div>
+                    <div class="mem-size">~30 KB</div>
+                    <div class="mem-desc">Free conventional memory (usable)</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x07C00</div>
+                    <div class="mem-size">512 B</div>
+                    <div class="mem-desc">MBR loaded here by BIOS — your bootloader entry point</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x07E00</div>
+                    <div class="mem-size">~480 KB</div>
+                    <div class="mem-desc">Conventional memory — Stage 2 typically loads here</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">0x80000</div>
+                    <div class="mem-size">128 KB</div>
+                    <div class="mem-desc">EBDA — Extended BIOS Data Area. Don't touch without asking first.</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">0xA0000</div>
+                    <div class="mem-size">384 KB</div>
+                    <div class="mem-desc">Video RAM, ROM, BIOS extensions — hardware-mapped, not RAM</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0xF0000</div>
+                    <div class="mem-size">64 KB</div>
+                    <div class="mem-desc">BIOS ROM — the firmware code itself</div>
+                </div>
+            </div>
+        </div>
 </body>
 
 </html>
