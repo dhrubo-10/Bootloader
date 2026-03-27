@@ -394,6 +394,152 @@
                 generates the correct address.
             </div>
         </div>
+
+        <div class="topic" id="topic-2">
+            <div class="topic-badge">03 · Foundation</div>
+            <h2 class="topic-title">The MBR</h2>
+            <p class="topic-subtitle">512 bytes. The entire first stage of your bootloader lives here. Every byte
+                counts.</p>
+
+            <h3>MBR Layout: All 512 Bytes Accounted For</h3>
+            <div class="mem-map">
+                <div class="mem-row header">
+                    <div>Offset</div>
+                    <div>Size</div>
+                    <div>Contents</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x000</div>
+                    <div class="mem-size">446 B</div>
+                    <div class="mem-desc">Bootstrap code — your actual bootloader code lives here</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x1BE</div>
+                    <div class="mem-size">16 B</div>
+                    <div class="mem-desc">Partition entry 1 (status, CHS start, type, CHS end, LBA start, size)</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x1CE</div>
+                    <div class="mem-size">16 B</div>
+                    <div class="mem-desc">Partition entry 2</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x1DE</div>
+                    <div class="mem-size">16 B</div>
+                    <div class="mem-desc">Partition entry 3</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x1EE</div>
+                    <div class="mem-size">16 B</div>
+                    <div class="mem-desc">Partition entry 4</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x1FE</div>
+                    <div class="mem-size">2 B</div>
+                    <div class="mem-desc">Boot signature: 0x55 0xAA — mandatory or BIOS won't boot it</div>
+                </div>
+            </div>
+
+            <div class="callout warn">
+                <strong>446 bytes, not 512.</strong> If you're building a real bootloader, you have 446 bytes for code.
+                The rest is partition table + signature. In practice, for a learning bootloader without a partition
+                table, you get all 510 bytes — but the moment you add MBR partitioning, you lose 64 bytes.
+            </div>
+
+            <h3>The Boot Signature: 0x55AA</h3>
+            <p>The last two bytes of the MBR must be <code>0x55</code> followed by <code>0xAA</code>. In x86
+                little-endian storage, this means the 16-bit word at offset 0x1FE is <code>0xAA55</code>. The BIOS
+                checks this before jumping to 0x7C00. If it's wrong, the BIOS skips this device entirely.</p>
+
+            <h3>Partition Table Entry Structure</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">partition entry · 16 bytes</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Each partition entry is 16 bytes:</span>
+<span class="dir">struc partition_entry</span>
+    .status      <span class="dir">resb</span> <span class="num">1</span>    <span class="cmt">; 0x80 = bootable, 0x00 = not bootable</span>
+    .chs_start   <span class="dir">resb</span> <span class="num">3</span>    <span class="cmt">; CHS address of first sector (legacy, mostly ignored)</span>
+    .type        <span class="dir">resb</span> <span class="num">1</span>    <span class="cmt">; Partition type: 0x83=Linux, 0x0B=FAT32, 0x82=swap...</span>
+    .chs_end     <span class="dir">resb</span> <span class="num">3</span>    <span class="cmt">; CHS address of last sector (legacy)</span>
+    .lba_start   <span class="dir">resd</span> <span class="num">1</span>    <span class="cmt">; LBA of first sector (USE THIS, not CHS)</span>
+    .sector_cnt  <span class="dir">resd</span> <span class="num">1</span>    <span class="cmt">; Total sectors in partition</span>
+<span class="dir">endstruc</span></pre>
+            </div>
+
+            <h3>Why Stage 2 Is Necessary</h3>
+            <p>446 bytes is not enough to load a kernel. You can't even implement a basic FAT32 driver in 446 bytes. The
+                MBR's only job is to:</p>
+            <ul>
+                <li>Find the active (bootable) partition</li>
+                <li>Read Stage 2 from a known location on disk into memory</li>
+                <li>Jump to Stage 2</li>
+            </ul>
+            <p>Stage 2 can be as large as you want — typically loaded at <code>0x7E00</code> (right after the MBR in
+                memory). It has the space to enable A20, set up the GDT, switch to 32-bit protected mode, parse the
+                filesystem, and load the kernel.</p>
+
+            <h3>A Real MBR: Loading Stage 2</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · MBR loading stage 2 via LBA</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 16]</span>
+<span class="dir">[ORG 0x7C00]</span>
+
+<span class="lbl">mbr_start:</span>
+    <span class="kw">cli</span>
+    <span class="kw">xor</span>   <span class="reg">ax</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">ds</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">es</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">ss</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">sp</span>, <span class="num">0x7C00</span>
+    <span class="kw">sti</span>
+    <span class="kw">mov</span>   <span class="dir">[boot_drive]</span>, <span class="reg">dl</span>  <span class="cmt">; BIOS passes drive number in DL</span>
+
+    <span class="cmt">; Load 4 sectors (2KB) starting at LBA 1, to 0x7E00</span>
+    <span class="kw">mov</span>   <span class="reg">si</span>, <span class="lbl">dap</span>             <span class="cmt">; DS:SI points to Disk Address Packet</span>
+    <span class="kw">mov</span>   <span class="reg">ah</span>, <span class="num">0x42</span>           <span class="cmt">; INT 13h AH=0x42 = Extended Read (LBA)</span>
+    <span class="kw">mov</span>   <span class="reg">dl</span>, <span class="dir">[boot_drive]</span>
+    <span class="kw">int</span>   <span class="num">0x13</span>
+    <span class="kw">jc</span>    <span class="lbl">disk_error</span>          <span class="cmt">; CF set on error</span>
+
+    <span class="kw">jmp</span>   <span class="num">0x0000</span>:<span class="num">0x7E00</span>       <span class="cmt">; Far jump to Stage 2</span>
+
+<span class="lbl">disk_error:</span>
+    <span class="kw">hlt</span>
+
+<span class="cmt">; Disk Address Packet (DAP) for INT 13h extended read</span>
+<span class="lbl">dap:</span>
+    <span class="dir">db</span> <span class="num">0x10</span>         <span class="cmt">; Size of DAP = 16 bytes</span>
+    <span class="dir">db</span> <span class="num">0x00</span>         <span class="cmt">; Reserved, must be 0</span>
+    <span class="dir">dw</span> <span class="num">4</span>            <span class="cmt">; Number of sectors to read</span>
+    <span class="dir">dw</span> <span class="num">0x7E00</span>       <span class="cmt">; Destination offset</span>
+    <span class="dir">dw</span> <span class="num">0x0000</span>       <span class="cmt">; Destination segment</span>
+    <span class="dir">dq</span> <span class="num">1</span>            <span class="cmt">; LBA of first sector to read (sector 1, right after MBR)</span>
+
+<span class="lbl">boot_drive:</span>
+    <span class="dir">db</span> <span class="num">0</span>
+
+<span class="dir">times 446 - ($ - $$) db 0</span>   <span class="cmt">; Pad to partition table</span>
+<span class="dir">times 64 db 0</span>               <span class="cmt">; Empty partition table</span>
+<span class="dir">dw 0xAA55</span></pre>
+            </div>
+
+            <div class="callout success">
+                <strong>Key insight:</strong> Save the boot drive number from <code>DL</code> immediately. The BIOS
+                passes it in DL before jumping to 0x7C00, but the moment you call any BIOS INT, DL may be clobbered.
+                Store it and use it for all subsequent disk operations.
+            </div>
+        </div>
         <script src="script.js"></script>
 </body>
 
