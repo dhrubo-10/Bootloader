@@ -611,3 +611,148 @@ pre::-webkit-scrollbar-thumb {
         padding: 10px 24px;
     }
 }
+
+.kw {
+    color: #c678dd;
+}
+
+.cmt {
+    color: #5c6370;
+    font-style: italic;
+}
+
+.str {
+    color: #98c379;
+}
+
+.num {
+    color: #d19a66;
+}
+
+.fn {
+    color: #61afef;
+}
+
+.reg {
+    color: #e5c07b;
+}
+
+.lbl {
+    color: #e06c75;
+}
+
+.dir {
+    color: #56b6c2;
+}
+
+.op {
+    color: #abb2bf;
+}
+
+.bits {
+    display: flex;
+    margin: 12px 0 20px;
+    font-family: var(--font-mono);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    overflow: hidden;
+}
+
+.bit-group {
+    flex: 1;
+    text-align: center;
+    border-right: 1px solid var(--border);
+}
+
+.bit-group:last-child {
+    border-right: none;
+}
+
+.bit-label {
+    font-size: 10px;
+    color: var(--text3);
+    padding: 4px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: 0.05em;
+}
+
+.bit-val {
+    font-size: 13px;
+    padding: 6px;
+    color: var(--accent2);
+}
+
+.bit-val.set {
+    color: var(--accent);
+    background: rgba(74, 222, 128, 0.07);
+}
+
+.bit-val.key {
+    color: var(--amber);
+    background: rgba(251, 191, 36, 0.07);
+}
+
+
+.divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 32px 0;
+}
+
+.steps {
+    counter-reset: step;
+    margin: 16px 0 24px;
+}
+
+.step {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    align-items: flex-start;
+    counter-increment: step;
+}
+
+.step-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+    flex-shrink: 0;
+    border: 1px solid rgba(74, 222, 128, 0.3);
+}
+
+.step-content {
+    flex: 1;
+}
+
+.step-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #d1d9e8;
+    margin-bottom: 4px;
+}
+
+.step-desc {
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.6;
+}
+
+.step-desc code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    background: var(--bg3);
+    color: var(--accent2);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
