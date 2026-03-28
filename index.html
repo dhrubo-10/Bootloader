@@ -540,6 +540,301 @@
                 Store it and use it for all subsequent disk operations.
             </div>
         </div>
+        <div class="topic" id="topic-3">
+            <div class="topic-badge">04 · BIOS &amp; I/O</div>
+            <h2 class="topic-title">BIOS Interrupts</h2>
+            <p class="topic-subtitle">Your only interface to hardware in real mode. Know these cold — they're the API of
+                1981.</p>
+
+            <h3>How INT Works</h3>
+            <p>The x86 <code>INT n</code> instruction pushes FLAGS, CS, and IP onto the stack, then looks up vector n in
+                the <strong>Interrupt Vector Table</strong> at physical address 0x0000. Each entry is 4 bytes: a 16-bit
+                offset followed by a 16-bit segment. The CPU jumps to that segment:offset — that's the BIOS handler.
+                <code>IRET</code> at the end pops CS, IP, and FLAGS, returning to your code.</p>
+
+            <div class="callout info">
+                The IVT occupies the first 1024 bytes of memory (256 vectors × 4 bytes). It lives at 0x0000:0x0000. You
+                can actually overwrite BIOS interrupt handlers — but unless you're writing your own BIOS, don't.
+            </div>
+
+            <h3>INT 10h — Video Services</h3>
+            <table class="reg-table">
+                <tr>
+                    <th>AH</th>
+                    <th>Function</th>
+                    <th>Input</th>
+                    <th>Output</th>
+                </tr>
+                <tr>
+                    <td class="rname">0x00</td>
+                    <td>Set video mode</td>
+                    <td class="rdesc">AL = mode (0x03 = 80×25 text, 0x12 = 640×480 VGA)</td>
+                    <td class="rdesc">—</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x0E</td>
+                    <td>TTY write char</td>
+                    <td class="rdesc">AL = char, BH = page, BL = color</td>
+                    <td class="rdesc">Cursor advances automatically</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x02</td>
+                    <td>Set cursor pos</td>
+                    <td class="rdesc">BH = page, DH = row, DL = col</td>
+                    <td class="rdesc">—</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x0F</td>
+                    <td>Get video mode</td>
+                    <td class="rdesc">—</td>
+                    <td class="rdesc">AH = columns, AL = mode, BH = page</td>
+                </tr>
+            </table>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · print a null-terminated string</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Input: SI = pointer to null-terminated string</span>
+<span class="lbl">print_str:</span>
+    <span class="kw">push</span>  <span class="reg">ax</span>
+    <span class="kw">push</span>  <span class="reg">bx</span>
+    <span class="kw">mov</span>   <span class="reg">ah</span>, <span class="num">0x0E</span>
+    <span class="kw">xor</span>   <span class="reg">bx</span>, <span class="reg">bx</span>      <span class="cmt">; Page 0, foreground color irrelevant in text mode</span>
+<span class="lbl">.loop:</span>
+    <span class="kw">lodsb</span>              <span class="cmt">; AL = [DS:SI], SI++</span>
+    <span class="kw">test</span>  <span class="reg">al</span>, <span class="reg">al</span>       <span class="cmt">; Check for null terminator</span>
+    <span class="kw">jz</span>    <span class="lbl">.done</span>
+    <span class="kw">int</span>   <span class="num">0x10</span>
+    <span class="kw">jmp</span>   <span class="lbl">.loop</span>
+<span class="lbl">.done:</span>
+    <span class="kw">pop</span>   <span class="reg">bx</span>
+    <span class="kw">pop</span>   <span class="reg">ax</span>
+    <span class="kw">ret</span></pre>
+            </div>
+
+            <h3>INT 13h — Disk Services</h3>
+            <table class="reg-table">
+                <tr>
+                    <th>AH</th>
+                    <th>Function</th>
+                    <th>Key Inputs</th>
+                </tr>
+                <tr>
+                    <td class="rname">0x00</td>
+                    <td>Reset disk controller</td>
+                    <td class="rdesc">DL = drive</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x02</td>
+                    <td>Read sectors (CHS)</td>
+                    <td class="rdesc">AL=count, CH=cylinder, CL=sector(1-63), DH=head, DL=drive, ES:BX=buffer</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x41</td>
+                    <td>Check INT 13h extensions</td>
+                    <td class="rdesc">BX=0x55AA, DL=drive → CF clear if supported</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x42</td>
+                    <td>Extended Read (LBA)</td>
+                    <td class="rdesc">DS:SI = pointer to DAP (Disk Address Packet), DL=drive</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x48</td>
+                    <td>Get drive parameters (ext)</td>
+                    <td class="rdesc">DS:SI = result buffer, DL=drive → geometry info</td>
+                </tr>
+            </table>
+
+            <div class="callout warn">
+                <strong>Always use LBA (INT 13h AH=0x42) not CHS (AH=0x02).</strong> CHS addressing breaks beyond 8 GB
+                and the cylinder/head/sector encoding is a historical disaster. Check for extension support with AH=0x41
+                first, but any remotely modern BIOS supports it.
+            </div>
+
+            <h3>INT 15h — System Services</h3>
+            <p>The most important function for bootloaders:</p>
+
+            <table class="reg-table">
+                <tr>
+                    <th>AX</th>
+                    <th>Function</th>
+                    <th>Purpose</th>
+                </tr>
+                <tr>
+                    <td class="rname">0xE820</td>
+                    <td>Get Memory Map</td>
+                    <td class="rdesc">The only reliable way to discover installed RAM. CRITICAL — do this before
+                        entering protected mode.</td>
+                </tr>
+                <tr>
+                    <td class="rname">0xE801</td>
+                    <td>Get Extended Memory</td>
+                    <td class="rdesc">Older method. Returns memory in 1KB and 64KB blocks. Less detailed than E820.</td>
+                </tr>
+                <tr>
+                    <td class="rname">0x88</td>
+                    <td>Get Extended Memory (KB)</td>
+                    <td class="rdesc">Returns KB above 1MB. Oldest method. Max ~64MB. Avoid.</td>
+                </tr>
+            </table>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · INT 15h E820 memory map enumeration</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Build a memory map at 0x8000</span>
+<span class="cmt">; Returns: [0x8004] = number of entries</span>
+<span class="lbl">get_memory_map:</span>
+    <span class="kw">xor</span>   <span class="reg">ebx</span>, <span class="reg">ebx</span>       <span class="cmt">; EBX = 0 for first call, BIOS fills continuation value</span>
+    <span class="kw">xor</span>   <span class="reg">bp</span>, <span class="reg">bp</span>         <span class="cmt">; BP = entry count</span>
+    <span class="kw">mov</span>   <span class="reg">es</span>, <span class="reg">bp</span>
+    <span class="kw">mov</span>   <span class="reg">di</span>, <span class="num">0x8000</span>      <span class="cmt">; Write entries starting at ES:DI = 0x8000</span>
+    <span class="kw">mov</span>   <span class="reg">edx</span>, <span class="num">0x0534D4150</span> <span class="cmt">; Magic: "SMAP"</span>
+<span class="lbl">.loop:</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="num">0xE820</span>      <span class="cmt">; Function number</span>
+    <span class="kw">mov</span>   <span class="dir">[es:di + 20]</span>, <span class="kw">dword</span> <span class="num">1</span>  <span class="cmt">; ACPI 3.0 extended attributes field</span>
+    <span class="kw">mov</span>   <span class="reg">ecx</span>, <span class="num">24</span>          <span class="cmt">; Entry size in bytes</span>
+    <span class="kw">int</span>   <span class="num">0x15</span>
+    <span class="kw">jc</span>    <span class="lbl">.done</span>            <span class="cmt">; CF set = error or end</span>
+    <span class="kw">cmp</span>   <span class="reg">eax</span>, <span class="num">0x0534D4150</span> <span class="cmt">; BIOS must return "SMAP" in EAX</span>
+    <span class="kw">jne</span>   <span class="lbl">.done</span>
+    <span class="kw">test</span>  <span class="reg">ecx</span>, <span class="reg">ecx</span>
+    <span class="kw">jz</span>    <span class="lbl">.skip</span>
+    <span class="kw">inc</span>   <span class="reg">bp</span>              <span class="cmt">; Count this entry</span>
+    <span class="kw">add</span>   <span class="reg">di</span>, <span class="num">24</span>           <span class="cmt">; Advance buffer pointer</span>
+<span class="lbl">.skip:</span>
+    <span class="kw">test</span>  <span class="reg">ebx</span>, <span class="reg">ebx</span>
+    <span class="kw">jz</span>    <span class="lbl">.done</span>            <span class="cmt">; EBX = 0 means last entry</span>
+    <span class="kw">jmp</span>   <span class="lbl">.loop</span>
+<span class="lbl">.done:</span>
+    <span class="kw">mov</span>   <span class="dir">[0x8004]</span>, <span class="reg">bp</span>     <span class="cmt">; Store count for kernel</span>
+    <span class="kw">ret</span></pre>
+            </div>
+        </div>
+
+        <!-- ===== TOPIC 4: DISK I/O ===== -->
+        <div class="topic" id="topic-4">
+            <div class="topic-badge">05 · BIOS &amp; I/O</div>
+            <h2 class="topic-title">Disk I/O</h2>
+            <p class="topic-subtitle">CHS vs LBA. Reading sectors. Writing reliable disk code that doesn't silently
+                corrupt.</p>
+
+            <h3>CHS: The Legacy You Must Know</h3>
+            <p>CHS stands for <strong>Cylinder, Head, Sector</strong>. It's how ancient hard drives physically addressed
+                data:</p>
+            <ul>
+                <li><strong>Cylinder:</strong> Concentric ring on the disk platter (0 to N-1)</li>
+                <li><strong>Head:</strong> Read/write head on the arm (0 to N-1)</li>
+                <li><strong>Sector:</strong> Pie-slice of a track — <strong>1-indexed, starts at 1, not 0</strong></li>
+            </ul>
+            <p>CHS was already broken by the early 1990s. INT 13h CHS only supports 10-bit cylinders, 8-bit heads, 6-bit
+                sectors — max ~8 GB. For anything modern, use LBA.</p>
+
+            <h3>LBA: Logical Block Addressing</h3>
+            <p>LBA treats the disk as a flat array of 512-byte (or 4096-byte) sectors numbered from 0. Sector 0 is the
+                MBR. Sector 1 is the first sector after the MBR. Simple. The conversion from LBA to CHS if you ever need
+                it:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">formula · LBA to CHS conversion</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre>sector    = (LBA % sectors_per_track) + 1
+head      = (LBA / sectors_per_track) % num_heads
+cylinder  = (LBA / sectors_per_track) / num_heads</pre>
+            </div>
+
+            <h3>Disk Address Packet (DAP)</h3>
+            <p>INT 13h extended read (AH=0x42) takes a pointer to a DAP in DS:SI. The DAP structure:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · DAP structure</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Disk Address Packet — 16 bytes</span>
+<span class="dir">struc</span> <span class="fn">DAP</span>
+    .size         <span class="dir">resb</span> <span class="num">1</span>  <span class="cmt">; Size of this structure = 0x10 (16)</span>
+    .reserved     <span class="dir">resb</span> <span class="num">1</span>  <span class="cmt">; Must be 0</span>
+    .count        <span class="dir">resw</span> <span class="num">1</span>  <span class="cmt">; Number of sectors to transfer (max ~127)</span>
+    .offset       <span class="dir">resw</span> <span class="num">1</span>  <span class="cmt">; Transfer buffer offset</span>
+    .segment      <span class="dir">resw</span> <span class="num">1</span>  <span class="cmt">; Transfer buffer segment</span>
+    .lba_lo       <span class="dir">resd</span> <span class="num">1</span>  <span class="cmt">; Low 32 bits of 64-bit LBA</span>
+    .lba_hi       <span class="dir">resd</span> <span class="num">1</span>  <span class="cmt">; High 32 bits (0 for drives &lt;2TB)</span>
+<span class="dir">endstruc</span></pre>
+            </div>
+
+            <h3>Robust Disk Read with Retries</h3>
+            <p>Disks fail. BIOS disk functions fail. <strong>Always retry</strong>. The standard approach: try up to 3
+                times, reset the controller between attempts.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · disk read with retry</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Input: SI = DAP pointer, DL = drive number</span>
+<span class="cmt">; Trashes: AX</span>
+<span class="lbl">disk_read:</span>
+    <span class="kw">mov</span>   <span class="reg">cx</span>, <span class="num">3</span>             <span class="cmt">; Retry count</span>
+<span class="lbl">.retry:</span>
+    <span class="kw">push</span>  <span class="reg">cx</span>
+    <span class="kw">mov</span>   <span class="reg">ah</span>, <span class="num">0x42</span>          <span class="cmt">; Extended read</span>
+    <span class="kw">int</span>   <span class="num">0x13</span>
+    <span class="kw">pop</span>   <span class="reg">cx</span>
+    <span class="kw">jnc</span>   <span class="lbl">.success</span>          <span class="cmt">; CF clear = success</span>
+
+    <span class="cmt">; Read failed — reset controller and retry</span>
+    <span class="kw">push</span>  <span class="reg">cx</span>
+    <span class="kw">mov</span>   <span class="reg">ah</span>, <span class="num">0x00</span>          <span class="cmt">; Reset disk controller</span>
+    <span class="kw">int</span>   <span class="num">0x13</span>
+    <span class="kw">pop</span>   <span class="reg">cx</span>
+    <span class="kw">loop</span>  <span class="lbl">.retry</span>
+
+    <span class="cmt">; All retries failed</span>
+    <span class="kw">jmp</span>   <span class="lbl">disk_error</span>
+
+<span class="lbl">.success:</span>
+    <span class="kw">ret</span></pre>
+            </div>
+
+            <div class="callout danger">
+                <strong>Reading across a 64KB segment boundary will fail or corrupt data.</strong> The BIOS DMA for disk
+                reads can't cross a 64KB segment boundary. If your destination buffer is at 0x7F00 and you read 512
+                bytes (0x200), you end up at 0x8100 — which crosses the 0x8000 boundary if DS=0. Keep reads within a
+                single 64KB segment or split them.
+            </div>
+
+            <h3>Loading a Large Bootloader: The Strategy</h3>
+            <p>Your Stage 2 can be loaded anywhere in the first 640 KB (0x0000–0x9FFFF). Common choices:</p>
+            <ul>
+                <li><code>0x7E00</code> — Right after MBR. Simple. Stage 2 can be up to ~480 KB here before hitting the
+                    EBDA at 0x80000.</li>
+                <li><code>0x10000</code> — 64 KB mark. Clean alignment, plenty of space below 0x80000.</li>
+                <li><code>0x20000</code> — 128 KB mark. Used by some bootloaders to keep away from the IVT/BDA region
+                    entirely.</li>
+            </ul>
+        </div>
         <script src="script.js"></script>
 </body>
 
