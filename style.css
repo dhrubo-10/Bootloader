@@ -756,3 +756,94 @@ pre::-webkit-scrollbar-thumb {
     padding: 1px 4px;
     border-radius: 3px;
 }
+
+#sidebar-footer {
+    padding: 16px 20px;
+    font-size: 11px;
+    color: #555;
+    border-top: 1px solid #222;
+    margin-top: auto;
+    text-align: center;
+    letter-spacing: 0.03em;
+}
+
+#slide {
+    display: none;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 1000;
+    background: #111;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    border-radius: 6px;
+    font-size: 20px;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+#overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 998;
+}
+
+#overlay.visible {
+    display: block;
+}
+
+@media (max-width: 768px) {
+    #slide {
+        display: flex;
+    }
+
+    #sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100%;
+        z-index: 999;
+        transform: translateX(-100%);
+        transition: transform 0.28s ease;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+    }
+
+    #sidebar.open {
+        transform: translateX(0);
+    }
+
+    #main {
+        margin-left: 0 !important;
+        width: 100% !important;
+    }
+
+    #topbar {
+        padding-left: 60px;
+    }
+
+    .topic {
+        padding: 24px 16px !important;
+    }
+
+    .reg-table {
+        display: block;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .code-block pre {
+        overflow-x: auto;
+    }
+
+    .mem-row {
+        font-size: 12px;
+    }
+}
