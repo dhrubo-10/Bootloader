@@ -4,11 +4,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bootloader Mastery</title>
+    <title>x86 Bootloader</title>
     <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
+    <button id="slide" onclick="toggleSidebar()">&#9776;</button>
+    <div id="overlay" onclick="toggleSidebar()"></div>
     <nav id="sidebar">
         <div id="sidebar-header">
             <div class="logo">x86 · asm · bare metal</div>
@@ -38,6 +40,9 @@
 
             <div class="nav-section">Modern</div>
             <div class="nav-item" data-topic="12"><span class="n">13</span>UEFI</div>
+        </div>
+        <div id="sidebar-footer">
+            &copy; <span id="year"></span> Shahriar Dhrubo. All rights reserved.
         </div>
     </nav>
 
@@ -550,7 +555,8 @@
             <p>The x86 <code>INT n</code> instruction pushes FLAGS, CS, and IP onto the stack, then looks up vector n in
                 the <strong>Interrupt Vector Table</strong> at physical address 0x0000. Each entry is 4 bytes: a 16-bit
                 offset followed by a 16-bit segment. The CPU jumps to that segment:offset — that's the BIOS handler.
-                <code>IRET</code> at the end pops CS, IP, and FLAGS, returning to your code.</p>
+                <code>IRET</code> at the end pops CS, IP, and FLAGS, returning to your code.
+            </p>
 
             <div class="callout info">
                 The IVT occupies the first 1024 bytes of memory (256 vectors × 4 bytes). It lives at 0x0000:0x0000. You
@@ -834,6 +840,290 @@ cylinder  = (LBA / sectors_per_track) / num_heads</pre>
                 <li><code>0x20000</code> — 128 KB mark. Used by some bootloaders to keep away from the IVT/BDA region
                     entirely.</li>
             </ul>
+        </div>
+        <div class="topic" id="topic-5">
+            <div class="topic-badge">06 · 32-bit Transition</div>
+            <h2 class="topic-title">The A20 Line</h2>
+            <p class="topic-subtitle">The most absurd hardware hack in computing history. You must deal with it.</p>
+
+            <h3>The Problem: Wrap-Around Compatibility</h3>
+            <p>On the 8086, the address bus was 20 bits. Accessing address <code>0xFFFF:0x0010</code> computes to
+                <code>0x100000</code> (1MB + 16 bytes). But with a 20-bit bus, bit 20 doesn't exist — the address
+                <strong>wraps around</strong> to <code>0x00000</code>. Some programs (mostly DOS ones) relied on this
+                wrap-around behavior.
+            </p>
+            <p>When the 286 arrived with a 24-bit address bus, bit 20 (A20) existed. The wrap-around no longer happened.
+                This broke compatibility. IBM's engineers — in an act of legendary hackery — added a hardware gate on
+                the A20 line, connected to <strong>bit 1 of the PS/2 keyboard controller's output port</strong>. By
+                default, A20 was disabled (gated off), so the 8086 wrap-around was preserved.</p>
+            <p>The result: every x86 PC since the 80286 has had this bizarre keyboard-controller-managed address line.
+                You must enable A20 before you can access memory above 1MB in protected mode.</p>
+
+            <h3>Three Ways to Enable A20</h3>
+            <h4>Method 1: BIOS INT 15h</h4>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · A20 via BIOS</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="kw">mov</span>   <span class="reg">ax</span>, <span class="num">0x2401</span>     <span class="cmt">; INT 15h AX=0x2401: Enable A20</span>
+<span class="kw">int</span>   <span class="num">0x15</span>
+<span class="kw">jc</span>    <span class="lbl">.try_keyboard</span>  <span class="cmt">; CF set = not supported, try keyboard method</span></pre>
+            </div>
+
+            <h4>Method 2: Keyboard Controller (the original hack)</h4>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · A20 via keyboard controller (Port
+                        0x64/0x60)</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="lbl">enable_a20_kbd:</span>
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="num">0xAD</span>        <span class="cmt">; Disable PS/2 port 1 (keyboard)</span>
+    <span class="kw">out</span>   <span class="num">0x64</span>, <span class="reg">al</span>
+
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="num">0xD0</span>        <span class="cmt">; Read output port command</span>
+    <span class="kw">out</span>   <span class="num">0x64</span>, <span class="reg">al</span>
+
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_data</span>
+    <span class="kw">in</span>    <span class="reg">al</span>, <span class="num">0x60</span>        <span class="cmt">; Read current output port value</span>
+    <span class="kw">push</span>  <span class="reg">ax</span>              <span class="cmt">; Save it</span>
+
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="num">0xD1</span>        <span class="cmt">; Write output port command</span>
+    <span class="kw">out</span>   <span class="num">0x64</span>, <span class="reg">al</span>
+
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">pop</span>   <span class="reg">ax</span>
+    <span class="kw">or</span>    <span class="reg">al</span>, <span class="num">0x02</span>        <span class="cmt">; Set bit 1 = A20 enable</span>
+    <span class="kw">out</span>   <span class="num">0x60</span>, <span class="reg">al</span>        <span class="cmt">; Write new output port value</span>
+
+    <span class="kw">call</span>  <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="num">0xAE</span>        <span class="cmt">; Re-enable PS/2 port 1</span>
+    <span class="kw">out</span>   <span class="num">0x64</span>, <span class="reg">al</span>
+    <span class="kw">ret</span>
+
+<span class="lbl">kbd_wait_cmd:</span>            <span class="cmt">; Wait for keyboard controller to be ready for a command</span>
+    <span class="kw">in</span>    <span class="reg">al</span>, <span class="num">0x64</span>
+    <span class="kw">test</span>  <span class="reg">al</span>, <span class="num">0x02</span>        <span class="cmt">; Bit 1: input buffer full</span>
+    <span class="kw">jnz</span>   <span class="lbl">kbd_wait_cmd</span>
+    <span class="kw">ret</span></pre>
+            </div>
+
+            <h4>Method 3: Fast A20 (Port 0x92)</h4>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · Fast A20 via Port 0x92</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="lbl">enable_a20_fast:</span>
+    <span class="kw">in</span>    <span class="reg">al</span>, <span class="num">0x92</span>
+    <span class="kw">test</span>  <span class="reg">al</span>, <span class="num">0x02</span>        <span class="cmt">; Already enabled?</span>
+    <span class="kw">jnz</span>   <span class="lbl">.done</span>
+    <span class="kw">or</span>    <span class="reg">al</span>, <span class="num">0x02</span>
+    <span class="kw">and</span>   <span class="reg">al</span>, <span class="num">0xFE</span>        <span class="cmt">; Clear bit 0 — don't trigger fast reset!</span>
+    <span class="kw">out</span>   <span class="num">0x92</span>, <span class="reg">al</span>
+<span class="lbl">.done:</span>
+    <span class="kw">ret</span></pre>
+            </div>
+
+            <div class="callout danger">
+                <strong>Bit 0 of Port 0x92 is the fast reset bit.</strong> Setting it reboots the machine. When setting
+                bit 1 (A20), always clear bit 0 first. Getting this wrong means your machine hard-resets the moment you
+                try to enable A20.
+            </div>
+
+            <h3>Verifying A20 Is Enabled</h3>
+            <p>After enabling, verify it actually worked. Write a known value to a real-mode accessible address, then
+                write a different value to the same physical address via the ≥1MB path. If A20 is still disabled, both
+                accesses alias to the same location. If it's enabled, they're different.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · A20 verification</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">; Returns: ZF set if A20 disabled, clear if enabled</span>
+<span class="lbl">check_a20:</span>
+    <span class="kw">push</span>  <span class="reg">es</span>
+    <span class="kw">push</span>  <span class="reg">di</span>
+    <span class="kw">push</span>  <span class="reg">ds</span>
+    <span class="kw">push</span>  <span class="reg">si</span>
+
+    <span class="kw">xor</span>   <span class="reg">ax</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">es</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">di</span>, <span class="num">0x0500</span>      <span class="cmt">; ES:DI = 0x0000:0x0500 = physical 0x0500</span>
+
+    <span class="kw">mov</span>   <span class="reg">ax</span>, <span class="num">0xFFFF</span>
+    <span class="kw">mov</span>   <span class="reg">ds</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">si</span>, <span class="num">0x0510</span>      <span class="cmt">; DS:SI = 0xFFFF:0x0510 = physical 0x100500</span>
+
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="dir">[es:di]</span>
+    <span class="kw">push</span>  <span class="reg">ax</span>              <span class="cmt">; Save original values</span>
+    <span class="kw">mov</span>   <span class="reg">al</span>, <span class="dir">[ds:si]</span>
+    <span class="kw">push</span>  <span class="reg">ax</span>
+
+    <span class="kw">mov</span>   <span class="kw">byte</span> <span class="dir">[es:di]</span>, <span class="num">0x00</span>
+    <span class="kw">mov</span>   <span class="kw">byte</span> <span class="dir">[ds:si]</span>, <span class="num">0xFF</span>
+
+    <span class="kw">cmp</span>   <span class="kw">byte</span> <span class="dir">[es:di]</span>, <span class="num">0xFF</span>  <span class="cmt">; If equal: A20 off (both alias same address)</span>
+
+    <span class="kw">pop</span>   <span class="reg">ax</span>               <span class="cmt">; Restore values</span>
+    <span class="kw">mov</span>   <span class="dir">[ds:si]</span>, <span class="reg">al</span>
+    <span class="kw">pop</span>   <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="dir">[es:di]</span>, <span class="reg">al</span>
+
+    <span class="kw">pop</span>   <span class="reg">si</span>
+    <span class="kw">pop</span>   <span class="reg">ds</span>
+    <span class="kw">pop</span>   <span class="reg">di</span>
+    <span class="kw">pop</span>   <span class="reg">es</span>
+    <span class="kw">ret</span></pre>
+            </div>
+        </div>
+        <div class="topic" id="topic-6">
+            <div class="topic-badge">07 · 32-bit Transition</div>
+            <h2 class="topic-title">Global Descriptor Table</h2>
+            <p class="topic-subtitle">The hardware data structure that defines memory segments in protected mode. Get
+                this right or triple-fault immediately.</p>
+
+            <h3>What the GDT Is</h3>
+            <p>In protected mode, segment registers no longer contain physical addresses. They contain
+                <strong>selectors</strong> — indices into the Global Descriptor Table. The GDT is an array of 8-byte
+                <strong>segment descriptors</strong> that define the base address, limit, and access rights of each
+                memory segment. The CPU hardware enforces these limits and permissions.
+            </p>
+            <p>The first entry (index 0) is <strong>always the null descriptor</strong> — 8 bytes of zeros. Loading any
+                segment register with selector 0 that gets dereferenced causes a General Protection Fault. This is
+                intentional: it catches uninitialized segment register bugs.</p>
+
+            <h3>Segment Descriptor Layout</h3>
+            <p>Each descriptor is 8 bytes. The layout is intentionally scrambled — historical byte-level compatibility
+                reasons with the 286's 6-byte descriptor format:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">segment descriptor · bit layout (8 bytes)</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">Bits 63-56:  Base[31:24]       High byte of base address
+Bits 55-52:  Flags             G, D/B, L, AVL
+Bits 51-48:  Limit[19:16]      High nibble of limit
+Bits 47-40:  Access Byte       P, DPL, S, Type
+Bits 39-16:  Base[23:0]        Low 3 bytes of base address
+Bits 15-0:   Limit[15:0]       Low word of limit</span>
+
+<span class="cmt">Access Byte breakdown (byte 5):</span>
+<span class="cmt">  Bit 7:   P   — Present (must be 1 for valid descriptor)</span>
+<span class="cmt">  Bits 6-5: DPL — Descriptor Privilege Level (0=kernel, 3=user)</span>
+<span class="cmt">  Bit 4:   S   — Descriptor type (1=code/data, 0=system)</span>
+<span class="cmt">  Bit 3:   E   — Executable (1=code, 0=data)</span>
+<span class="cmt">  Bit 2:   DC  — Direction/Conforming</span>
+<span class="cmt">  Bit 1:   RW  — Readable(code)/Writable(data)</span>
+<span class="cmt">  Bit 0:   A   — Accessed (CPU sets this, you leave it 0)</span>
+
+<span class="cmt">Flags nibble (bits 55-52):</span>
+<span class="cmt">  Bit 55:  G   — Granularity (0=byte limit, 1=page (4KB) limit)</span>
+<span class="cmt">  Bit 54:  D/B — Default op size (0=16-bit, 1=32-bit)</span>
+<span class="cmt">  Bit 53:  L   — Long mode (1=64-bit code segment)</span>
+<span class="cmt">  Bit 52:  AVL — Available for OS use</span></pre>
+            </div>
+
+            <h3>A Minimal 32-bit GDT</h3>
+            <p>For a flat 32-bit protected mode setup, you need exactly 3 entries: null descriptor, code segment, data
+                segment.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · GDT for 32-bit protected mode</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="lbl">gdt_start:</span>
+
+<span class="cmt">; Descriptor 0: Null — mandatory</span>
+<span class="lbl">gdt_null:</span>
+    <span class="dir">dq</span> <span class="num">0</span>
+
+<span class="cmt">; Descriptor 1: Code segment (selector 0x08)</span>
+<span class="cmt">; Base=0x00000000, Limit=0xFFFFF (×4KB = 4GB), Ring 0, 32-bit</span>
+<span class="lbl">gdt_code:</span>
+    <span class="dir">dw</span> <span class="num">0xFFFF</span>     <span class="cmt">; Limit[15:0]</span>
+    <span class="dir">dw</span> <span class="num">0x0000</span>     <span class="cmt">; Base[15:0]</span>
+    <span class="dir">db</span> <span class="num">0x00</span>       <span class="cmt">; Base[23:16]</span>
+    <span class="dir">db</span> <span class="num">0x9A</span>       <span class="cmt">; Access: P=1 DPL=00 S=1 E=1 DC=0 RW=1 A=0 → 10011010</span>
+    <span class="dir">db</span> <span class="num">0xCF</span>       <span class="cmt">; Flags+Limit[19:16]: G=1 D=1 L=0 → 1100 | 1111</span>
+    <span class="dir">db</span> <span class="num">0x00</span>       <span class="cmt">; Base[31:24]</span>
+
+<span class="cmt">; Descriptor 2: Data segment (selector 0x10)</span>
+<span class="cmt">; Same span as code, but not executable, writable</span>
+<span class="lbl">gdt_data:</span>
+    <span class="dir">dw</span> <span class="num">0xFFFF</span>
+    <span class="dir">dw</span> <span class="num">0x0000</span>
+    <span class="dir">db</span> <span class="num">0x00</span>
+    <span class="dir">db</span> <span class="num">0x92</span>       <span class="cmt">; Access: P=1 DPL=00 S=1 E=0 DC=0 RW=1 A=0 → 10010010</span>
+    <span class="dir">db</span> <span class="num">0xCF</span>
+    <span class="dir">db</span> <span class="num">0x00</span>
+
+<span class="lbl">gdt_end:</span>
+
+<span class="cmt">; GDT Descriptor (for LGDT instruction)</span>
+<span class="lbl">gdt_descriptor:</span>
+    <span class="dir">dw</span> gdt_end - gdt_start - <span class="num">1</span>  <span class="cmt">; Limit: size in bytes minus 1</span>
+    <span class="dir">dd</span> gdt_start                  <span class="cmt">; Base: linear address of GDT</span>
+
+<span class="cmt">; Segment selectors (index × 8, RPL in bits 1:0)</span>
+<span class="dir">CODE_SEG equ</span> gdt_code - gdt_start  <span class="cmt">; = 0x08</span>
+<span class="dir">DATA_SEG equ</span> gdt_data - gdt_start  <span class="cmt">; = 0x10</span></pre>
+            </div>
+
+            <h3>Segment Selectors: What CS/DS Actually Contain</h3>
+            <div class="bits">
+                <div class="bit-group">
+                    <div class="bit-label">bits 15:3</div>
+                    <div class="bit-val key">Index</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 2</div>
+                    <div class="bit-val">TI</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 1:0</div>
+                    <div class="bit-val">RPL</div>
+                </div>
+            </div>
+            <ul>
+                <li><strong>Index:</strong> Which entry in the GDT (or LDT if TI=1). Entry 1 = index 1 = bits 15:3 =
+                    0x0008. Entry 2 = 0x0010.</li>
+                <li><strong>TI (Table Indicator):</strong> 0 = GDT, 1 = LDT (Local Descriptor Table).</li>
+                <li><strong>RPL (Requested Privilege Level):</strong> 0 = ring 0, 3 = ring 3. CPU enforces that RPL ≤
+                    descriptor's DPL.</li>
+            </ul>
+
+            <div class="callout success">
+                <strong>The flat model:</strong> Setting both code and data segments to base 0 and limit 4GB (with G=1,
+                limit=0xFFFFF → 0xFFFFF × 4096 = 4GB) means segment registers become irrelevant — you're using a flat
+                address space. This is what every modern OS does. The segmentation hardware is effectively bypassed in
+                favor of paging.
+            </div>
         </div>
         <script src="script.js"></script>
 </body>
