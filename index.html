@@ -13,8 +13,8 @@
     <div id="overlay" onclick="toggleSidebar()"></div>
     <nav id="sidebar">
         <div id="sidebar-header">
-            <div class="logo">x86 · asm · bare metal</div>
-            <h1>Bootloader Mastery</h1>
+            <div class="logo">i386 · asm · bare metal</div>
+            <h1>i386 Bootloader</h1>
             <p>From power-on to kernel entry</p>
         </div>
         <div id="nav">
@@ -1123,6 +1123,157 @@ Bits 15-0:   Limit[15:0]       Low word of limit</span>
                 limit=0xFFFFF → 0xFFFFF × 4096 = 4GB) means segment registers become irrelevant — you're using a flat
                 address space. This is what every modern OS does. The segmentation hardware is effectively bypassed in
                 favor of paging.
+            </div>
+        </div>
+        <div class="topic" id="topic-7">
+            <div class="topic-badge">08 · 32-bit Transition</div>
+            <h2 class="topic-title">Protected Mode</h2>
+            <p class="topic-subtitle">The switch from 16-bit chaos to 32-bit hardware-enforced memory protection. One
+                bit in CR0. Then a lot of careful work.</p>
+
+            <h3>What Changes in Protected Mode</h3>
+            <ul>
+                <li><strong>32-bit registers</strong> — EAX, EBX, ECX, EDX, ESI, EDI, ESP, EBP, EIP</li>
+                <li><strong>Up to 4 GB addressable</strong> — with 32-bit registers and a 32-bit address bus</li>
+                <li><strong>Segment registers are selectors</strong> — they index into the GDT, not direct memory
+                    addresses</li>
+                <li><strong>Memory protection</strong> — the CPU enforces segment limits and privilege levels</li>
+                <li><strong>No BIOS interrupts</strong> — INT calls go through your IDT, not the IVT. BIOS services are
+                    real-mode only.</li>
+            </ul>
+
+            <h3>CR0: Control Register 0</h3>
+            <p><code>CR0</code> is a 32-bit control register. <strong>Bit 0 (PE — Protection Enable)</strong> is the
+                on/off switch for protected mode. Setting it is the actual transition. There's no going back easily
+                (well, technically you can, but that's obscure).</p>
+
+            <div class="bits">
+                <div class="bit-group">
+                    <div class="bit-label">bit 31</div>
+                    <div class="bit-val key">PG</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 30:19</div>
+                    <div class="bit-val">reserved</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 18</div>
+                    <div class="bit-val">AM</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 16</div>
+                    <div class="bit-val">WP</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 5:0</div>
+                    <div class="bit-val">NE,ET,TS,EM,MP</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 0</div>
+                    <div class="bit-val set">PE</div>
+                </div>
+            </div>
+
+            <h3>The Exact Switching Sequence</h3>
+            <p>This is the exact order you must follow. Deviate and you triple-fault:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · real mode → protected mode transition</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 16]</span>
+
+<span class="lbl">enter_protected_mode:</span>
+    <span class="cmt">; Step 1: Disable interrupts — no BIOS interrupts in PM</span>
+    <span class="kw">cli</span>
+
+    <span class="cmt">; Step 2: Load GDT — must be done before setting PE bit</span>
+    <span class="kw">lgdt</span>  <span class="dir">[gdt_descriptor]</span>
+
+    <span class="cmt">; Step 3: Set PE bit in CR0</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="reg">cr0</span>
+    <span class="kw">or</span>    <span class="reg">eax</span>, <span class="num">0x1</span>          <span class="cmt">; Set bit 0 (PE)</span>
+    <span class="kw">mov</span>   <span class="reg">cr0</span>, <span class="reg">eax</span>
+
+    <span class="cmt">; Step 4: FAR JUMP to flush instruction pipeline and reload CS</span>
+    <span class="cmt">; The far jump MUST come immediately after setting PE</span>
+    <span class="cmt">; It loads CS with our 32-bit code segment selector</span>
+    <span class="kw">jmp</span>   CODE_SEG:<span class="lbl">pm_entry</span>    <span class="cmt">; CODE_SEG = 0x08</span>
+
+<span class="dir">[BITS 32]</span>
+
+<span class="lbl">pm_entry:</span>
+    <span class="cmt">; Step 5: Update all other segment registers</span>
+    <span class="cmt">; They still contain old real-mode values</span>
+    <span class="kw">mov</span>   <span class="reg">ax</span>, DATA_SEG         <span class="cmt">; DATA_SEG = 0x10</span>
+    <span class="kw">mov</span>   <span class="reg">ds</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">es</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">fs</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">gs</span>, <span class="reg">ax</span>
+    <span class="kw">mov</span>   <span class="reg">ss</span>, <span class="reg">ax</span>
+
+    <span class="cmt">; Step 6: Set up a proper 32-bit stack</span>
+    <span class="kw">mov</span>   <span class="reg">esp</span>, <span class="num">0x90000</span>       <span class="cmt">; Stack at 576 KB mark</span>
+
+    <span class="cmt">; We are now in 32-bit protected mode</span>
+    <span class="cmt">; Full 32-bit registers, hardware-enforced segments</span></pre>
+            </div>
+
+            <div class="callout danger">
+                <strong>The far jump is mandatory.</strong> After setting PE, the CPU's instruction prefetch queue may
+                contain 16-bit decoded instructions. The far jump flushes this and forces a pipeline refill in 32-bit
+                mode. It also loads CS with the correct 32-bit selector. If you omit it or delay it, you get a triple
+                fault — the CPU resets.
+            </div>
+
+            <h3>Why No Interrupts?</h3>
+            <p>In real mode, <code>INT n</code> looks up vector n in the IVT at address 0x0000. In protected mode,
+                interrupts go through the <strong>IDT (Interrupt Descriptor Table)</strong>. The moment you set PE=1,
+                any interrupt that fires (even a hardware IRQ from the timer or keyboard) will look for your IDT — which
+                you haven't set up yet. The result: triple fault, system reset. <code>CLI</code> before switching, set
+                up your IDT after, then <code>STI</code>.</p>
+
+            <h3>Protected Mode Memory Layout</h3>
+            <div class="mem-map">
+                <div class="mem-row header">
+                    <div>Address</div>
+                    <div>Size</div>
+                    <div>Contents</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00000000</div>
+                    <div class="mem-size">1 KB</div>
+                    <div class="mem-desc">Former IVT (now just RAM you can use)</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00007C00</div>
+                    <div class="mem-size">512 B</div>
+                    <div class="mem-desc">MBR code (still here in memory)</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x00010000</div>
+                    <div class="mem-size">varies</div>
+                    <div class="mem-desc">Your Stage 2 / bootloader code running here</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x00090000</div>
+                    <div class="mem-size">—</div>
+                    <div class="mem-desc">Stack (grows down)</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x00100000</div>
+                    <div class="mem-size">varies</div>
+                    <div class="mem-desc">Extended memory (1 MB+) — available now A20 is enabled</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">0x000A0000</div>
+                    <div class="mem-size">384 KB</div>
+                    <div class="mem-desc">VGA/Video RAM — memory-mapped hardware</div>
+                </div>
             </div>
         </div>
         <script src="script.js"></script>
