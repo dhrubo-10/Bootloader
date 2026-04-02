@@ -1276,7 +1276,252 @@ Bits 15-0:   Limit[15:0]       Low word of limit</span>
                 </div>
             </div>
         </div>
-        
+        <div class="topic" id="topic-8">
+            <div class="topic-badge">09 · Memory &amp; Kernel</div>
+            <h2 class="topic-title">Memory Map (E820)</h2>
+            <p class="topic-subtitle">Before entering protected mode, ask the BIOS what RAM actually exists. Your kernel
+                needs this to manage memory.</p>
+
+            <h3>Why You Need E820</h3>
+            <p>The physical address space is not a flat array of usable RAM. It has holes — regions mapped to video
+                memory, ROM, MMIO for devices, reserved firmware regions, ACPI tables. You cannot just assume everything
+                from 0 to 4GB is RAM. Your kernel's physical memory manager must know which regions are safe to use.</p>
+            <p>INT 15h E820 is the definitive way to get this map. It returns a list of entries, each describing a
+                physical address range and its type. <strong>You must call this in real mode</strong> — before entering
+                protected mode.</p>
+
+            <h3>E820 Entry Structure</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">C · E820 entry structure (20 or 24 bytes)</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="kw">struct</span> <span class="fn">e820_entry</span> {
+    <span class="kw">uint64_t</span> base;      <span class="cmt">// Physical base address of this region</span>
+    <span class="kw">uint64_t</span> length;    <span class="cmt">// Length in bytes</span>
+    <span class="kw">uint32_t</span> type;      <span class="cmt">// Region type (see below)</span>
+    <span class="kw">uint32_t</span> acpi_attr; <span class="cmt">// ACPI 3.0 extended attributes (optional)</span>
+} <span class="fn">__attribute__</span>((packed));
+
+<span class="cmt">// Region types:</span>
+<span class="cmt">// 1 = Usable RAM               &lt;-- the good stuff</span>
+<span class="cmt">// 2 = Reserved                 &lt;-- hardware, firmware, don't touch</span>
+<span class="cmt">// 3 = ACPI Reclaimable         &lt;-- usable after parsing ACPI tables</span>
+<span class="cmt">// 4 = ACPI NVS                 &lt;-- ACPI non-volatile storage, never touch</span>
+<span class="cmt">// 5 = Bad RAM                  &lt;-- defective memory, never use</span></pre>
+            </div>
+
+            <h3>Typical E820 Output</h3>
+            <div class="mem-map">
+                <div class="mem-row header">
+                    <div>Base</div>
+                    <div>Length</div>
+                    <div>Type</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x000000000</div>
+                    <div class="mem-size">0x09FC00</div>
+                    <div class="mem-desc">Type 1 — Usable RAM (0 to ~639 KB)</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">0x00009FC00</div>
+                    <div class="mem-size">0x000400</div>
+                    <div class="mem-desc">Type 2 — Reserved (EBDA area)</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">0x0000F0000</div>
+                    <div class="mem-size">0x010000</div>
+                    <div class="mem-desc">Type 2 — Reserved (BIOS ROM, 64 KB)</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">0x000100000</div>
+                    <div class="mem-size">varies</div>
+                    <div class="mem-desc">Type 1 — Usable RAM (extended memory, 1 MB+)</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">high addr</div>
+                    <div class="mem-size">varies</div>
+                    <div class="mem-desc">Type 2 — Reserved (MMIO, firmware, PCI holes)</div>
+                </div>
+            </div>
+
+            <h3>Passing the Map to Your Kernel</h3>
+            <p>Collect all E820 entries into a buffer (typically stored at a fixed address like <code>0x8000</code>).
+                Store the entry count. Then, when you jump to your kernel, pass this information either through:</p>
+            <ul>
+                <li><strong>Registers:</strong> put the map address in a register before jumping (simple but inflexible)
+                </li>
+                <li><strong>A boot info structure:</strong> create a struct at a fixed address with the map pointer,
+                    entry count, kernel command line, etc. This is what Multiboot and Linux's boot protocol do.</li>
+            </ul>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">C · kernel-side E820 processing</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="kw">void</span> <span class="fn">parse_memory_map</span>(<span class="kw">struct</span> e820_entry *entries, <span class="kw">uint32_t</span> count) {
+    <span class="kw">uint64_t</span> total_usable = <span class="num">0</span>;
+    
+    <span class="kw">for</span> (<span class="kw">uint32_t</span> i = <span class="num">0</span>; i &lt; count; i++) {
+        <span class="kw">if</span> (entries[i].type == <span class="num">1</span>) {  <span class="cmt">// Usable RAM</span>
+            total_usable += entries[i].length;
+            <span class="fn">pmm_add_region</span>(entries[i].base, entries[i].length);
+        }
+    }
+    
+    <span class="fn">kprintf</span>(<span class="str">"Total usable RAM: %llu MB\n"</span>, total_usable / (<span class="num">1024</span> * <span class="num">1024</span>));
+}</pre>
+            </div>
+        </div>
+        <div class="topic" id="topic-9">
+            <div class="topic-badge">10 · Memory &amp; Kernel</div>
+            <h2 class="topic-title">Paging</h2>
+            <p class="topic-subtitle">The second layer of address translation. Virtual addresses → physical addresses.
+                How modern OSes isolate processes.</p>
+
+            <h3>Why Paging Exists</h3>
+            <p>Segmentation alone isn't enough for a modern OS. Paging adds a second layer of address translation that
+                enables:</p>
+            <ul>
+                <li><strong>Virtual address spaces</strong> — each process thinks it has all of memory to itself</li>
+                <li><strong>Memory isolation</strong> — process A can't read process B's pages (different page tables)
+                </li>
+                <li><strong>Demand paging</strong> — pages don't need to be in RAM (they can be on disk, swapped in when
+                    accessed)</li>
+                <li><strong>Memory-mapped files</strong> — files appear as memory regions</li>
+            </ul>
+
+            <h3>32-bit Paging: Two-Level Page Tables</h3>
+            <p>In 32-bit protected mode, a virtual address is split into three parts:</p>
+
+            <div class="bits">
+                <div class="bit-group">
+                    <div class="bit-label">bits 31:22</div>
+                    <div class="bit-val key">Dir Index (10 bits)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 21:12</div>
+                    <div class="bit-val key">Table Index (10 bits)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 11:0</div>
+                    <div class="bit-val">Page Offset (12 bits)</div>
+                </div>
+            </div>
+
+            <ul>
+                <li><strong>Page Directory:</strong> 1024 entries × 4 bytes = 4 KB. CR3 points here. Each entry points
+                    to a Page Table.</li>
+                <li><strong>Page Table:</strong> 1024 entries × 4 bytes = 4 KB. Each entry gives the physical base of a
+                    4 KB page.</li>
+                <li><strong>Page Offset:</strong> 12 bits = 4096 bytes = 4 KB page size. Added directly to the page
+                    base.</li>
+            </ul>
+            <p>Total: 1024 directories × 1024 tables × 4 KB = 4 GB addressable. Perfect for 32-bit.</p>
+
+            <h3>Page Table Entry Format</h3>
+            <div class="bits">
+                <div class="bit-group">
+                    <div class="bit-label">bits 31:12</div>
+                    <div class="bit-val key">Physical Frame Number</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 11:9</div>
+                    <div class="bit-val">Avail</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 7</div>
+                    <div class="bit-val">PS</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 5</div>
+                    <div class="bit-val">A</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 4</div>
+                    <div class="bit-val">PCD</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 2</div>
+                    <div class="bit-val">U/S</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 1</div>
+                    <div class="bit-val">R/W</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bit 0</div>
+                    <div class="bit-val set">P</div>
+                </div>
+            </div>
+            <ul>
+                <li><strong>P (Present):</strong> If 0, accessing this page causes a page fault.</li>
+                <li><strong>R/W:</strong> 0 = read-only, 1 = read/write.</li>
+                <li><strong>U/S:</strong> 0 = supervisor (ring 0 only), 1 = user accessible.</li>
+                <li><strong>A (Accessed) / D (Dirty):</strong> CPU sets these automatically. Dirty = page was written.
+                </li>
+            </ul>
+
+            <h3>Identity Mapping: Bootstrap Trick</h3>
+            <p>When you first enable paging, the CPU is executing code at some physical address (say 0x10000). If
+                virtual address ≠ physical address after enabling paging, your next instruction fetch will fault.
+                Solution: <strong>identity map</strong> the first N MB — map virtual address X to physical address X.
+                Then your code keeps running. After the kernel is loaded and has its own mappings, you can remove the
+                identity map.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · enable paging (identity mapped first 4 MB)</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 32]</span>
+
+<span class="lbl">setup_paging:</span>
+    <span class="cmt">; Page directory at 0x1000, page table at 0x2000</span>
+    <span class="cmt">; Both must be 4 KB aligned</span>
+
+    <span class="cmt">; Clear page directory (4 KB = 1024 dwords)</span>
+    <span class="kw">mov</span>   <span class="reg">edi</span>, <span class="num">0x1000</span>
+    <span class="kw">mov</span>   <span class="reg">ecx</span>, <span class="num">1024</span>
+    <span class="kw">xor</span>   <span class="reg">eax</span>, <span class="reg">eax</span>
+    <span class="kw">rep</span>   <span class="kw">stosd</span>
+
+    <span class="cmt">; First PDE: points to our page table at 0x2000</span>
+    <span class="cmt">; Flags: Present(1), Writable(1), Supervisor(0)</span>
+    <span class="kw">mov</span>   <span class="kw">dword</span> <span class="dir">[0x1000]</span>, <span class="num">0x2003</span>    <span class="cmt">; 0x2000 | P | R/W</span>
+
+    <span class="cmt">; Fill page table: identity map 0x0 to 0x400000 (4 MB)</span>
+    <span class="kw">mov</span>   <span class="reg">edi</span>, <span class="num">0x2000</span>               <span class="cmt">; Page table base</span>
+    <span class="kw">xor</span>   <span class="reg">eax</span>, <span class="reg">eax</span>
+<span class="lbl">.fill_pt:</span>
+    <span class="kw">mov</span>   <span class="dir">[edi]</span>, <span class="reg">eax</span>
+    <span class="kw">or</span>    <span class="kw">dword</span> <span class="dir">[edi]</span>, <span class="num">0x3</span>          <span class="cmt">; Present + Writable</span>
+    <span class="kw">add</span>   <span class="reg">eax</span>, <span class="num">0x1000</span>              <span class="cmt">; Next 4KB physical frame</span>
+    <span class="kw">add</span>   <span class="reg">edi</span>, <span class="num">4</span>
+    <span class="kw">cmp</span>   <span class="reg">eax</span>, <span class="num">0x400000</span>            <span class="cmt">; Mapped 4 MB yet?</span>
+    <span class="kw">jb</span>    <span class="lbl">.fill_pt</span>
+
+    <span class="cmt">; Load CR3 with the page directory address</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="num">0x1000</span>
+    <span class="kw">mov</span>   <span class="reg">cr3</span>, <span class="reg">eax</span>
+
+    <span class="cmt">; Enable paging: set PG bit (bit 31) in CR0</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="reg">cr0</span>
+    <span class="kw">or</span>    <span class="reg">eax</span>, <span class="num">0x80000000</span>
+    <span class="kw">mov</span>   <span class="reg">cr0</span>, <span class="reg">eax</span>
+    <span class="kw">ret</span></pre>
+            </div>
+        </div>
         <script src="script.js"></script>
 </body>
 
