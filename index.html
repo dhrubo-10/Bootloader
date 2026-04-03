@@ -1522,6 +1522,276 @@ Bits 15-0:   Limit[15:0]       Low word of limit</span>
     <span class="kw">ret</span></pre>
             </div>
         </div>
+
+        <div class="topic" id="topic-10">
+            <div class="topic-badge">11 · Memory &amp; Kernel</div>
+            <h2 class="topic-title">Long Mode (64-bit)</h2>
+            <p class="topic-subtitle">x86-64. The final destination for a modern OS kernel. 4-level page tables. 64-bit
+                registers. The full deal.</p>
+
+            <h3>Prerequisites for Long Mode</h3>
+            <p>You can't jump straight to 64-bit from real mode. The CPU enforces a specific sequence:</p>
+            <ul>
+                <li>You must be in <strong>32-bit protected mode</strong> with paging enabled</li>
+                <li>The CPU must support long mode (check with CPUID)</li>
+                <li>You must set up <strong>4-level page tables (PML4)</strong></li>
+                <li>Enable Physical Address Extension (<strong>PAE</strong>, CR4 bit 5)</li>
+                <li>Set the <strong>LME bit</strong> in the EFER MSR (Model Specific Register)</li>
+                <li>Then set PG in CR0 — this activates long mode</li>
+            </ul>
+
+            <h3>Check for Long Mode Support</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · CPUID long mode check</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 32]</span>
+
+<span class="lbl">check_long_mode:</span>
+    <span class="cmt">; First check if CPUID supports extended functions</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="num">0x80000000</span>
+    <span class="kw">cpuid</span>
+    <span class="kw">cmp</span>   <span class="reg">eax</span>, <span class="num">0x80000001</span>    <span class="cmt">; Must support at least 0x80000001</span>
+    <span class="kw">jb</span>    <span class="lbl">.no_long_mode</span>
+
+    <span class="cmt">; Get extended feature flags</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="num">0x80000001</span>
+    <span class="kw">cpuid</span>
+    <span class="kw">test</span>  <span class="reg">edx</span>, <span class="num">1 &lt;&lt; 29</span>       <span class="cmt">; Bit 29 of EDX = LM (Long Mode)</span>
+    <span class="kw">jz</span>    <span class="lbl">.no_long_mode</span>
+    <span class="kw">ret</span>                       <span class="cmt">; Long mode supported</span>
+
+<span class="lbl">.no_long_mode:</span>
+    <span class="cmt">; Halt — this CPU can't run a 64-bit kernel</span>
+    <span class="kw">hlt</span></pre>
+            </div>
+
+            <h3>64-bit Page Tables: 4-Level PML4</h3>
+            <p>Long mode uses a 4-level page table structure. A 64-bit virtual address is split as:</p>
+            <div class="bits">
+                <div class="bit-group">
+                    <div class="bit-label">bits 63:48</div>
+                    <div class="bit-val">Sign Ext.</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 47:39</div>
+                    <div class="bit-val key">PML4 (9)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 38:30</div>
+                    <div class="bit-val key">PDPT (9)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 29:21</div>
+                    <div class="bit-val key">PD (9)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 20:12</div>
+                    <div class="bit-val key">PT (9)</div>
+                </div>
+                <div class="bit-group">
+                    <div class="bit-label">bits 11:0</div>
+                    <div class="bit-val">Offset</div>
+                </div>
+            </div>
+            <p>4 levels × 9 bits + 12 offset = 48 bits of virtual address space = 256 TB. Physical address space with
+                current CPUs: 48 bits = 256 TB physical RAM (not that you'll have that much).</p>
+
+            <h3>The Full Long Mode Entry Sequence</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">x86 NASM · 32-bit protected mode → 64-bit long mode</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="dir">[BITS 32]</span>
+
+<span class="lbl">enter_long_mode:</span>
+    <span class="cmt">; 1. Build minimal identity-mapped page tables</span>
+    <span class="cmt">;    PML4 at 0x1000, PDPT at 0x2000, PD at 0x3000</span>
+    <span class="cmt">;    Using 2MB huge pages — simpler, fewer tables</span>
+
+    <span class="kw">mov</span>   <span class="reg">edi</span>, <span class="num">0x1000</span>
+    <span class="kw">mov</span>   <span class="reg">cr3</span>, <span class="reg">edi</span>
+    <span class="kw">xor</span>   <span class="reg">eax</span>, <span class="reg">eax</span>
+    <span class="kw">mov</span>   <span class="reg">ecx</span>, <span class="num">3072</span>           <span class="cmt">; Clear 3 tables (3 × 4KB)</span>
+    <span class="kw">rep</span>   <span class="kw">stosd</span>
+
+    <span class="cmt">; PML4[0] → PDPT at 0x2000</span>
+    <span class="kw">mov</span>   <span class="kw">dword</span> <span class="dir">[0x1000]</span>, <span class="num">0x2003</span>   <span class="cmt">; Present + R/W</span>
+    <span class="cmt">; PDPT[0] → PD at 0x3000</span>
+    <span class="kw">mov</span>   <span class="kw">dword</span> <span class="dir">[0x2000]</span>, <span class="num">0x3003</span>
+    <span class="cmt">; PD[0] → 0x0 (2MB huge page)</span>
+    <span class="kw">mov</span>   <span class="kw">dword</span> <span class="dir">[0x3000]</span>, <span class="num">0x83</span>     <span class="cmt">; Present + R/W + PS (huge page)</span>
+
+    <span class="cmt">; 2. Enable PAE (Physical Address Extension) in CR4</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="reg">cr4</span>
+    <span class="kw">or</span>    <span class="reg">eax</span>, <span class="num">1 &lt;&lt; 5</span>            <span class="cmt">; Bit 5 = PAE</span>
+    <span class="kw">mov</span>   <span class="reg">cr4</span>, <span class="reg">eax</span>
+
+    <span class="cmt">; 3. Set LME bit in EFER MSR (MSR 0xC0000080)</span>
+    <span class="kw">mov</span>   <span class="reg">ecx</span>, <span class="num">0xC0000080</span>
+    <span class="kw">rdmsr</span>                          <span class="cmt">; Read EFER → EDX:EAX</span>
+    <span class="kw">or</span>    <span class="reg">eax</span>, <span class="num">1 &lt;&lt; 8</span>             <span class="cmt">; Bit 8 = LME (Long Mode Enable)</span>
+    <span class="kw">wrmsr</span>                          <span class="cmt">; Write back</span>
+
+    <span class="cmt">; 4. Enable paging (PG bit) — activates long mode</span>
+    <span class="kw">mov</span>   <span class="reg">eax</span>, <span class="reg">cr0</span>
+    <span class="kw">or</span>    <span class="reg">eax</span>, <span class="num">0x80000000</span>
+    <span class="kw">mov</span>   <span class="reg">cr0</span>, <span class="reg">eax</span>
+
+    <span class="cmt">; 5. Far jump with 64-bit code segment selector</span>
+    <span class="cmt">;    GDT needs a 64-bit code descriptor (L=1, D=0)</span>
+    <span class="kw">jmp</span>   CODE64_SEG:<span class="lbl">lm_entry</span>
+
+<span class="dir">[BITS 64]</span>
+<span class="lbl">lm_entry:</span>
+    <span class="cmt">; We are in 64-bit long mode</span>
+    <span class="cmt">; Full 64-bit registers: RAX, RBX, RCX, RDX, RSI, RDI, R8-R15</span>
+    <span class="kw">mov</span>   <span class="reg">rsp</span>, <span class="num">0x200000</span>       <span class="cmt">; Stack at 2 MB mark</span></pre>
+            </div>
+
+            <div class="callout info">
+                <strong>The 64-bit GDT descriptor</strong> for the code segment needs <code>L=1</code> (Long mode) and
+                <code>D=0</code> (NOT 32-bit default). The descriptor's base and limit are ignored in long mode — the
+                CPU uses flat 64-bit addressing. You still need the descriptor structure, but only the type and L/D bits
+                matter.
+            </div>
+        </div>
+        <div class="topic" id="topic-11">
+            <div class="topic-badge">12 · Memory &amp; Kernel</div>
+            <h2 class="topic-title">ELF &amp; Kernel Loading</h2>
+            <p class="topic-subtitle">Your kernel is an ELF binary. Parse it. Load its segments. Jump to its entry
+                point.</p>
+
+            <h3>ELF: Executable and Linkable Format</h3>
+            <p>ELF is the standard binary format on Linux and most Unix-like systems. Your kernel, compiled with
+                GCC/Clang, produces an ELF file. The bootloader's job is to parse this file and load the correct
+                segments into memory at the correct addresses.</p>
+
+            <h3>ELF File Structure</h3>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <div class="step-title">ELF Header (52 bytes for 32-bit, 64 bytes for 64-bit)</div>
+                        <div class="step-desc">Magic bytes <code>\x7FELF</code>, architecture, entry point address,
+                            offset to program headers.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <div class="step-title">Program Headers (segments)</div>
+                        <div class="step-desc">Each entry says: load this chunk of the file to this virtual address,
+                            with these permissions.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <div class="step-title">Section Headers</div>
+                        <div class="step-desc">Used by the linker and debugger. Your bootloader doesn't need these — use
+                            program headers.</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>The ELF64 Header</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">C · ELF64 structures</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="kw">typedef struct</span> {
+    <span class="kw">uint8_t</span>  e_ident[16];  <span class="cmt">// Magic: 7F 45 4C 46 (7F 'E' 'L' 'F'), class, endian...</span>
+    <span class="kw">uint16_t</span> e_type;       <span class="cmt">// 2=ET_EXEC (executable), 3=ET_DYN (shared)</span>
+    <span class="kw">uint16_t</span> e_machine;    <span class="cmt">// 0x3E = AMD64 (x86-64)</span>
+    <span class="kw">uint32_t</span> e_version;    <span class="cmt">// Must be 1</span>
+    <span class="kw">uint64_t</span> e_entry;      <span class="cmt">// Entry point virtual address — JUMP HERE</span>
+    <span class="kw">uint64_t</span> e_phoff;      <span class="cmt">// Offset of program header table</span>
+    <span class="kw">uint64_t</span> e_shoff;      <span class="cmt">// Offset of section header table (ignore this)</span>
+    <span class="kw">uint32_t</span> e_flags;
+    <span class="kw">uint16_t</span> e_ehsize;     <span class="cmt">// Size of this header = 64</span>
+    <span class="kw">uint16_t</span> e_phentsize;  <span class="cmt">// Size of one program header entry = 56</span>
+    <span class="kw">uint16_t</span> e_phnum;      <span class="cmt">// Number of program header entries</span>
+    <span class="kw">uint16_t</span> e_shentsize;
+    <span class="kw">uint16_t</span> e_shnum;
+    <span class="kw">uint16_t</span> e_shstrndx;
+} <span class="fn">Elf64_Ehdr</span>;
+
+<span class="kw">typedef struct</span> {
+    <span class="kw">uint32_t</span> p_type;    <span class="cmt">// 1=PT_LOAD (must be loaded), 0=PT_NULL (skip)</span>
+    <span class="kw">uint32_t</span> p_flags;   <span class="cmt">// PF_X(1)=exec, PF_W(2)=write, PF_R(4)=read</span>
+    <span class="kw">uint64_t</span> p_offset;  <span class="cmt">// Offset in ELF file where this segment starts</span>
+    <span class="kw">uint64_t</span> p_vaddr;   <span class="cmt">// Virtual address to load segment at</span>
+    <span class="kw">uint64_t</span> p_paddr;   <span class="cmt">// Physical address (usually same as vaddr)</span>
+    <span class="kw">uint64_t</span> p_filesz;  <span class="cmt">// Size in file (may be smaller than p_memsz)</span>
+    <span class="kw">uint64_t</span> p_memsz;   <span class="cmt">// Size in memory (zero the difference: BSS)</span>
+    <span class="kw">uint64_t</span> p_align;   <span class="cmt">// Alignment (must be power of 2)</span>
+} <span class="fn">Elf64_Phdr</span>;</pre>
+            </div>
+
+            <div class="callout warn">
+                <strong>p_filesz vs p_memsz:</strong> The BSS segment (uninitialized globals) takes no space in the file
+                (<code>p_filesz = 0</code>) but needs space in memory (<code>p_memsz > 0</code>). When loading a PT_LOAD
+                segment, copy <code>p_filesz</code> bytes from the file, then <code>memset</code> the remaining
+                <code>p_memsz - p_filesz</code> bytes to zero. Miss this and your kernel's global variables start with
+                garbage.
+            </div>
+
+            <h3>Kernel Loader: The Core Loop</h3>
+            <div class="code-block">
+                <div class="code-header"><span class="lang">C · ELF64 kernel loader</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="kw">typedef void</span> (*<span class="fn">KernelEntry</span>)(<span class="kw">struct</span> BootInfo*);
+
+<span class="kw">void</span> <span class="fn">load_kernel</span>(<span class="kw">uint8_t</span> *elf_data, <span class="kw">struct</span> BootInfo *boot_info) {
+    Elf64_Ehdr *ehdr = (Elf64_Ehdr*)elf_data;
+
+    <span class="cmt">// Verify ELF magic: 0x7F 'E' 'L' 'F'</span>
+    <span class="kw">if</span> (ehdr->e_ident[0] != <span class="num">0x7F</span> || ehdr->e_ident[1] != <span class="str">'E'</span> ||
+        ehdr->e_ident[2] != <span class="str">'L'</span>  || ehdr->e_ident[3] != <span class="str">'F'</span>) {
+        <span class="fn">panic</span>(<span class="str">"Not an ELF binary"</span>);
+    }
+
+    <span class="cmt">// Walk program headers, load all PT_LOAD segments</span>
+    Elf64_Phdr *phdr = (Elf64_Phdr*)(elf_data + ehdr->e_phoff);
+
+    <span class="kw">for</span> (<span class="kw">int</span> i = <span class="num">0</span>; i &lt; ehdr->e_phnum; i++, phdr++) {
+        <span class="kw">if</span> (phdr->p_type != <span class="num">1</span>) <span class="kw">continue</span>;  <span class="cmt">// Not PT_LOAD, skip</span>
+
+        <span class="kw">uint8_t</span> *src  = elf_data + phdr->p_offset;
+        <span class="kw">uint8_t</span> *dest = (<span class="kw">uint8_t</span>*)phdr->p_paddr;
+
+        <span class="cmt">// Copy file data</span>
+        <span class="fn">memcpy</span>(dest, src, phdr->p_filesz);
+
+        <span class="cmt">// Zero the BSS area (memsz > filesz)</span>
+        <span class="fn">memset</span>(dest + phdr->p_filesz, <span class="num">0</span>, phdr->p_memsz - phdr->p_filesz);
+    }
+
+    <span class="cmt">// Cast entry point to function pointer and call it</span>
+    KernelEntry entry = (KernelEntry)ehdr->e_entry;
+    <span class="fn">entry</span>(boot_info);  <span class="cmt">// Should never return</span>
+    <span class="fn">panic</span>(<span class="str">"Kernel returned!"</span>);
+}</pre>
+            </div>
+        </div>
         <script src="script.js"></script>
 </body>
 
