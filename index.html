@@ -1792,7 +1792,181 @@ Bits 15-0:   Limit[15:0]       Low word of limit</span>
 }</pre>
             </div>
         </div>
-        <script src="script.js"></script>
+        <div class="topic" id="topic-12">
+            <div class="topic-badge">13 · Modern</div>
+            <h2 class="topic-title">UEFI</h2>
+            <p class="topic-subtitle">The modern firmware interface. More powerful than BIOS but also significantly more
+                complex.</p>
+
+            <h3>UEFI vs BIOS: What Actually Changed</h3>
+            <p>UEFI (Unified Extensible Firmware Interface) replaces BIOS. Key differences:</p>
+            <ul>
+                <li><strong>Starts in 32 or 64-bit mode</strong> — no more 16-bit real mode gymnastics</li>
+                <li><strong>Full C API</strong> — instead of INT calls, you call function pointers in a table</li>
+                <li><strong>Filesystem understanding</strong> — UEFI natively reads FAT32. Your bootloader is an EFI
+                    application stored as a file.</li>
+                <li><strong>GPT partitioning</strong> — UEFI uses GPT instead of MBR. No 512-byte size constraint.</li>
+                <li><strong>Secure Boot</strong> — firmware verifies the bootloader's signature before running it.</li>
+            </ul>
+
+            <h3>UEFI Boot Process</h3>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <div class="step-title">SEC (Security) Phase</div>
+                        <div class="step-desc">Firmware integrity check, CPU cache-as-RAM initialization, microcode
+                            update.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <div class="step-title">PEI (Pre-EFI Init)</div>
+                        <div class="step-desc">Memory controller initialization. RAM brought online. Basic hardware
+                            init.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <div class="step-title">DXE (Driver Execution Environment)</div>
+                        <div class="step-desc">UEFI drivers loaded. Boot services installed. All hardware initialized.
+                        </div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">4</div>
+                    <div class="step-content">
+                        <div class="step-title">BDS (Boot Device Select)</div>
+                        <div class="step-desc">UEFI looks for <code>\EFI\BOOT\BOOTX64.EFI</code> on the FAT32 EFI System
+                            Partition (ESP).</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">5</div>
+                    <div class="step-content">
+                        <div class="step-title">Your UEFI application runs</div>
+                        <div class="step-desc">UEFI loads your <code>.efi</code> file (a PE32+ binary), calls its entry
+                            point in a full 64-bit environment.</div>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-num">6</div>
+                    <div class="step-content">
+                        <div class="step-title">ExitBootServices()</div>
+                        <div class="step-desc">You call this to take ownership of hardware. UEFI firmware stops managing
+                            memory. You're on your own.</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>The UEFI Table Hierarchy</h3>
+            <p>Everything in UEFI goes through function pointer tables:</p>
+
+            <div class="code-block">
+                <div class="code-header"><span class="lang">C · UEFI entry point and table access</span>
+                    <div class="dots">
+                        <div class="dot dot-r"></div>
+                        <div class="dot dot-y"></div>
+                        <div class="dot dot-g"></div>
+                    </div>
+                </div>
+                <pre><span class="cmt">// Your UEFI app's entry point — called by firmware</span>
+EFI_STATUS EFIAPI <span class="fn">efi_main</span>(
+    EFI_HANDLE        ImageHandle,
+    EFI_SYSTEM_TABLE  *SystemTable    <span class="cmt">// The root of everything</span>
+) {
+    <span class="cmt">// Print via Boot Services → ConOut</span>
+    SystemTable->ConOut-><span class="fn">OutputString</span>(
+        SystemTable->ConOut,
+        L"Bootloader starting...\r\n"   <span class="cmt">// UTF-16LE strings in UEFI</span>
+    );
+
+    <span class="cmt">// Get memory map before ExitBootServices</span>
+    UINTN                MemMapSize = <span class="num">0</span>;
+    EFI_MEMORY_DESCRIPTOR *MemMap;
+    UINTN                MapKey, DescSize;
+    UINT32               DescVer;
+
+    <span class="cmt">// First call gets required buffer size</span>
+    SystemTable->BootServices-><span class="fn">GetMemoryMap</span>(
+        &MemMapSize, <span class="num">NULL</span>, &MapKey, &DescSize, &DescVer
+    );
+
+    <span class="cmt">// Allocate + fetch the actual map</span>
+    SystemTable->BootServices-><span class="fn">AllocatePool</span>(
+        EfiLoaderData, MemMapSize, (<span class="kw">VOID</span>**)&MemMap
+    );
+    SystemTable->BootServices-><span class="fn">GetMemoryMap</span>(
+        &MemMapSize, MemMap, &MapKey, &DescSize, &DescVer
+    );
+
+    <span class="cmt">// Hand control to yourself — firmware no longer manages hardware</span>
+    SystemTable->BootServices-><span class="fn">ExitBootServices</span>(ImageHandle, MapKey);
+
+    <span class="cmt">// Set up page tables, load kernel, jump to entry...</span>
+    <span class="fn">load_and_run_kernel</span>(MemMap, MemMapSize / DescSize);
+
+    <span class="kw">return</span> EFI_SUCCESS; <span class="cmt">// Never reached</span>
+}</pre>
+            </div>
+
+            <h3>Key UEFI Memory Types</h3>
+            <div class="mem-map">
+                <div class="mem-row header">
+                    <div>Type</div>
+                    <div>Value</div>
+                    <div>Meaning</div>
+                </div>
+                <div class="mem-row highlight">
+                    <div class="mem-addr">EfiConventional</div>
+                    <div class="mem-size">7</div>
+                    <div class="mem-desc">Free RAM — usable after ExitBootServices</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">EfiLoaderCode</div>
+                    <div class="mem-size">1</div>
+                    <div class="mem-desc">Your bootloader's code (becomes usable after)</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">EfiLoaderData</div>
+                    <div class="mem-size">2</div>
+                    <div class="mem-desc">Your bootloader's allocated data</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">EfiRuntimeServices</div>
+                    <div class="mem-size">5,6</div>
+                    <div class="mem-desc">UEFI runtime services — must remain mapped forever</div>
+                </div>
+                <div class="mem-row danger">
+                    <div class="mem-addr">EfiACPIReclaimable</div>
+                    <div class="mem-size">9</div>
+                    <div class="mem-desc">ACPI tables — keep until you've parsed them</div>
+                </div>
+            </div>
+
+            <div class="callout success">
+                <strong>For learning purposes:</strong> Start with BIOS/MBR. It's harder in some ways (real mode, 512
+                bytes) but you understand every single layer. Once you've written a BIOS bootloader from scratch, UEFI's
+                complexity makes sense — it's solving the same problems at a higher level. Projects like
+                <strong>TianoCore EDK II</strong> and <strong>gnu-efi</strong> give you the headers and libraries to
+                write UEFI apps without reimplementing the entire spec.
+            </div>
+
+            <h3>Recommended Learning Path</h3>
+            <ul>
+                <li>Write a BIOS MBR that prints a string → understand 16-bit real mode cold</li>
+                <li>Add Stage 2 that loads from disk and enters 32-bit protected mode</li>
+                <li>Add E820 memory map collection</li>
+                <li>Set up paging, enter long mode</li>
+                <li>Parse an ELF kernel, load it, jump to it</li>
+                <li>Then, and only then, write a UEFI version — you'll appreciate what it's abstracting</li>
+            </ul>
+        </div>
+
+    </div>
 </body>
+<script src="script.js"></script>
 
 </html>
