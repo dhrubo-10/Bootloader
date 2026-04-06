@@ -73,12 +73,39 @@
             <p>At that address sits a <strong>JMP instruction</strong> — placed there by your motherboard firmware (BIOS
                 or UEFI). It jumps to the actual firmware code, typically somewhere in the high flash ROM. The CPU has
                 no idea what OS you're running. It doesn't care. It just executes the instruction at that address.</p>
+            <p>At reset, all general-purpose registers (<code>EAX</code>, <code>EBX</code>, etc.) are set to zero or
+                undefined values. <code>EFLAGS</code> is cleared except for bit 1 (reserved, always 1). The CPU is
+                running
+                in <strong>16-bit real mode</strong> — no memory protection, no virtual addressing, no privilege rings.
+                Just raw segment:offset addressing with a 1 MB ceiling. The pipeline is flushed, caches are invalidated,
+                and the branch predictor has no history. It's a completely cold start at the silicon level.</p>
 
             <div class="callout info">
                 <strong>Why 0xFFFF0?</strong> After a reset, the CPU drives CS to 0xF000 with an internal base of
                 0xFFFF0000 (in 80386+). The real mode segment:offset pair 0xFFFF:0x0000 evaluates to 0xFFFF0. The first
-                instructions are in ROM — ROM that exists at the top of the 1MB + a bit of extended space.
+                instructions are in ROM — ROM that exists at the top of the 1MB + a bit of extended space. On modern
+                CPUs, this ROM is actually a small flash chip (SPI flash, typically 16–32 MB) soldered on the
+                motherboard.
+                The chipset maps a region of this flash into the top of the CPU's address space before any RAM is even
+                initialized. The CPU is literally reading from flash storage on its very first instruction cycle.
             </div>
+
+            <h3>Real Mode: The Starting Environment</h3>
+            <p>Real mode is where every x86 CPU begins, no matter how modern. It's a 16-bit execution environment that
+                mimics the original 8086 from 1978. Physical addresses are computed as
+                <code>(segment × 16) + offset</code>,
+                giving a maximum addressable range of <strong>1 MB + 64 KB - 16 bytes</strong> (the infamous "High
+                Memory
+                Area"). There is no memory protection whatsoever — any code can read or write any physical address,
+                including
+                the IVT, BDA, or ROM regions. A single bad pointer dereference can silently corrupt the interrupt table
+                and
+                crash the machine with no error. This is the environment your bootloader lives in.</p>
+            <p>Register widths are 16-bit by default, but on 386+ CPUs you can use 32-bit operand and address size
+                prefixes
+                (<code>0x66</code> and <code>0x67</code>) even in real mode — a trick some bootloaders use to access
+                memory
+                above 64 KB within a segment without switching modes.</p>
 
             <h3>POST (Power-On Self Test)</h3>
             <p>Before anything useful happens, the BIOS runs POST. It's not magic — it's just a checklist:</p>
@@ -90,17 +117,56 @@
                 <li>Enumerate and initialize hardware: IDE, SATA, NVMe controllers</li>
                 <li>Set up the <strong>Interrupt Vector Table (IVT)</strong> at address <code>0x0000</code></li>
             </ul>
+            <p>POST failures communicate through <strong>beep codes</strong> — because the video subsystem itself might
+                not
+                be initialized yet, there's no screen to write to. Each BIOS vendor (AMI, Award, Phoenix) has their own
+                beep code scheme. One long beep + two short beeps means something different on AMI vs Award. On modern
+                UEFI systems, POST errors are often logged to NVRAM and surfaced via debug LEDs or a small 7-segment
+                display
+                on enthusiast motherboards (the "POST code" display showing hex values like <code>A2</code>,
+                <code>00</code>).
+            </p>
+            <p>The RAM test during POST is a destructive read-write-verify cycle across every addressable cell. The
+                firmware
+                writes known patterns (all zeros, all ones, alternating bits) and reads them back. This is why POST
+                takes
+                longer with more RAM — it's physically testing every bit. You can usually disable it in BIOS settings
+                ("Quick
+                Boot") which skips the full test and trusts that RAM is good.</p>
+
+            <div class="callout info">
+                <strong>UEFI vs Legacy BIOS POST:</strong> UEFI firmware runs a more structured initialization sequence
+                called
+                <strong>PI (Platform Initialization)</strong>, divided into phases: SEC (Security), PEI (Pre-EFI
+                Initialization), DXE (Driver eXecution Environment), BDS (Boot Device Selection), and RT (Runtime
+                Services).
+                Each phase has well-defined entry and exit conditions. DXE is where most hardware drivers run, and it's
+                where
+                the UEFI Shell and applications live. This is far more modular than legacy BIOS, which was essentially a
+                single
+                monolithic flat binary.
+            </div>
 
             <h3>The Boot Device Search</h3>
             <p>After POST, the BIOS checks its configured boot order. It looks for a <strong>bootable device</strong>.
                 For a disk, "bootable" is brutally simple: read the first 512 bytes. If the last two bytes are
                 <code>0x55</code> and <code>0xAA</code> — it's bootable. That's it. That's the entire check.
             </p>
+            <p>The BIOS reads the boot sector using <strong>INT 13h</strong> — a BIOS interrupt that provides disk I/O
+                services in real mode. Early INT 13h used CHS (Cylinder-Head-Sector) geometry, which capped disk access
+                at 8 GB. LBA (Logical Block Addressing) extensions to INT 13h (INT 13h AH=42h) removed this limit and
+                are
+                what modern bootloaders use. If you've written a bootloader with <code>INT 13h AH=0x42</code> and a Disk
+                Address Packet (DAP), you've used LBA extensions directly.</p>
 
             <div class="callout warn">
                 <strong>The 0x55AA signature</strong> is at bytes 510 and 511 (0-indexed), i.e., the last two bytes of
                 the 512-byte sector. The BIOS loads those 512 bytes to address <code>0x7C00</code> and jumps to it. Your
-                bootloader now has control.
+                bootloader now has control. Note that bytes 446–509 of the MBR are the <strong>partition table</strong>
+                —
+                four 16-byte entries describing up to four primary partitions. Bytes 0–445 (446 bytes) are the only
+                space available for your actual bootloader code. In practice it's even less if you include a BPB
+                (BIOS Parameter Block) at the start, as FAT-formatted drives do.
             </div>
 
             <h3>Why 0x7C00?</h3>
@@ -108,6 +174,26 @@
                 accident. On the IBM PC (8088, 1981), this was the highest point where a 512-byte bootloader could live
                 without overwriting itself or the BIOS data area, while still leaving the first 32KB for the OS. The
                 original PC had 32KB of usable RAM. <strong>0x7C00 = 0x8000 - 0x0200 (512 bytes)</strong>.</p>
+            <p>There's a subtle bug trap here: <code>0x7C00</code> can be addressed as <code>0x0000:0x7C00</code> or
+                <code>0x07C0:0x0000</code> — both resolve to the same physical address in real mode. If your bootloader
+                uses <code>[org 0x7C00]</code> in NASM but the BIOS jumps to <code>0x07C0:0x0000</code>, your absolute
+                label addresses will be wrong by 0x7C00 and all your data references will be garbage. Always explicitly
+                set <code>DS</code> to a known value at the start of your bootloader. Never assume segment register
+                contents on entry — the BIOS spec doesn't guarantee them.
+            </p>
+
+            <div class="callout info">
+                <strong>The A20 Line:</strong> On the original 8086, the address bus was 20 bits wide (A0–A19), giving
+                exactly 1 MB. Programs that "wrapped around" past 1 MB (address 0x100000) would silently alias back to
+                address 0x00000 — some programs relied on this behavior. When the 286 added a 21st address line (A20),
+                IBM physically gated it through the <strong>keyboard controller (8042)</strong> and left it disabled by
+                default to preserve backward compatibility. Your bootloader must enable A20 before accessing memory
+                above
+                1 MB. There are multiple methods: keyboard controller method, Fast A20 via port 0x92, BIOS INT 15h
+                AH=2401h,
+                and more. Many bootloaders try all of them. If you forget, accessing address 0x100000 silently wraps to
+                0x00000 and you spend hours debugging memory corruption.
+            </div>
 
             <h3>The Full Boot Sequence</h3>
             <div class="steps">
@@ -116,7 +202,7 @@
                     <div class="step-content">
                         <div class="step-title">CPU Reset</div>
                         <div class="step-desc">CPU sets <code>CS:IP = 0xFFFF:0x0000</code>. All registers zeroed or set
-                            to known state. Cache flushed.</div>
+                            to known state. Cache flushed. Running in 16-bit real mode.</div>
                     </div>
                 </div>
                 <div class="step">
@@ -124,15 +210,15 @@
                     <div class="step-content">
                         <div class="step-title">BIOS/Firmware executes</div>
                         <div class="step-desc">JMP at 0xFFFF0 takes us to firmware. POST runs, hardware initialized, IVT
-                            populated at 0x0000.</div>
+                            populated at 0x0000. BIOS services become available via software interrupts.</div>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-num">3</div>
                     <div class="step-content">
                         <div class="step-title">Boot device selected</div>
-                        <div class="step-desc">First 512 bytes of boot device read. <code>0x55AA</code> signature
-                            verified.</div>
+                        <div class="step-desc">First 512 bytes of boot device read via INT 13h. <code>0x55AA</code>
+                            signature verified. BIOS iterates boot order until a valid MBR is found.</div>
                     </div>
                 </div>
                 <div class="step">
@@ -140,34 +226,83 @@
                     <div class="step-content">
                         <div class="step-title">MBR loaded to 0x7C00</div>
                         <div class="step-desc">BIOS does <code>JMP 0x0000:0x7C00</code>. We're in 16-bit real mode. CPU
-                            hands off to your code.</div>
+                            hands off to your code. <code>DL</code> register contains the boot drive number (0x80 for
+                            first HDD).</div>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-num">5</div>
                     <div class="step-content">
                         <div class="step-title">Stage 1 Bootloader</div>
-                        <div class="step-desc">MBR code (≤446 bytes usable) loads a larger Stage 2 from disk. Stage 2
-                            has room to breathe.</div>
+                        <div class="step-desc">MBR code (≤446 bytes usable) loads a larger Stage 2 from disk. It reads
+                            the partition table, finds the active partition, and loads Stage 2 using INT 13h LBA reads.
+                            Stack is manually set up — typically below 0x7C00.</div>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-num">6</div>
                     <div class="step-content">
                         <div class="step-title">Stage 2: The real work</div>
-                        <div class="step-desc">Enable A20. Set up GDT. Switch to protected mode. Build page tables.
-                            Enter long mode.</div>
+                        <div class="step-desc">Enable A20. Query memory map via INT 15h E820h. Set up GDT. Switch to
+                            protected mode (set PE bit in CR0). Build page tables. Enable paging (set PG bit in CR0).
+                            Enter long mode (set LME in EFER MSR, then set CR4.PAE).</div>
                     </div>
                 </div>
                 <div class="step">
                     <div class="step-num">7</div>
                     <div class="step-content">
                         <div class="step-title">Kernel entry</div>
-                        <div class="step-desc">Parse ELF. Load segments. Pass boot information (memory map). Jump to
-                            kernel's entry point.</div>
+                        <div class="step-desc">Parse ELF headers. Load PT_LOAD segments to correct virtual addresses.
+                            Pass boot information structure (memory map, framebuffer info, ACPI tables pointer). Jump
+                            to kernel's entry point — now running in 64-bit long mode with paging active.</div>
                     </div>
                 </div>
             </div>
+
+            <h3>Protected Mode and the GDT</h3>
+            <p>Before jumping to the kernel, Stage 2 must leave real mode behind. The switch to <strong>32-bit protected
+                    mode</strong> requires setting up a <strong>Global Descriptor Table (GDT)</strong> — a data
+                structure that
+                defines memory segments with base, limit, and access rights. In protected mode, segment registers no
+                longer
+                hold raw base addresses; they hold <strong>selectors</strong> — 16-bit indices into the GDT.</p>
+            <p>A minimal GDT for a bootloader has three entries: a null descriptor (required by the CPU spec — accessing
+                segment 0x0000 causes a General Protection Fault), a code segment (ring 0, executable, readable), and a
+                data
+                segment (ring 0, writable). The switch itself is a precise sequence: load the GDT with
+                <code>LGDT</code>,
+                set bit 0 of <code>CR0</code> (the PE bit), then immediately perform a far jump to flush the instruction
+                pipeline and reload CS with the new code segment selector. Miss any step and the CPU triple-faults — no
+                error
+                message, just an instant reset.</p>
+
+            <div class="callout info">
+                <strong>Long Mode (64-bit):</strong> Reaching 64-bit long mode from real mode requires going through
+                protected mode first — you can't jump directly. The sequence: enable PAE (set <code>CR4.PAE</code>),
+                load a valid PML4 page table into <code>CR3</code>, set the LME (Long Mode Enable) bit in the
+                <code>EFER</code> MSR (via <code>RDMSR</code>/<code>WRMSR</code> on MSR 0xC0000080), then enable paging
+                by setting <code>CR0.PG</code>. At this point the CPU enters "compatibility mode" — long mode is active
+                but you're still running 32-bit code. A far jump to a 64-bit code segment selector (L-bit set in GDT)
+                finally gets you into true 64-bit mode. This is why bootloaders are often a layered assembly of 16-bit,
+                32-bit, and 64-bit code sections in the same file.
+            </div>
+
+            <h3>The E820 Memory Map</h3>
+            <p>Before leaving real mode, your bootloader should call <strong>INT 15h AH=E820h</strong> to get a memory
+                map from the BIOS. This is the only reliable way to know which physical address ranges are usable RAM,
+                which
+                are reserved by hardware, which are ACPI tables, and which are flat-out holes. The call fills a
+                structure with
+                entries typed as: <code>1</code> = usable RAM, <code>2</code> = reserved, <code>3</code> = ACPI
+                reclaimable,
+                <code>4</code> = ACPI NVS (non-volatile sleep), <code>5</code> = bad memory. Your kernel's physical
+                memory
+                manager must respect this map — writing to a "reserved" region can corrupt firmware data structures or
+                hardware
+                MMIO registers. The E820 map is one of the most important pieces of information a bootloader hands to
+                the kernel.
+                Linux stores it and exposes it at <code>/sys/firmware/memmap/</code>.
+            </p>
 
             <h3>Memory Layout at Boot</h3>
             <div class="mem-map">
@@ -179,42 +314,57 @@
                 <div class="mem-row">
                     <div class="mem-addr">0x00000</div>
                     <div class="mem-size">1 KB</div>
-                    <div class="mem-desc">IVT — 256 interrupt vectors (4 bytes each: seg:off)</div>
+                    <div class="mem-desc">IVT — 256 interrupt vectors (4 bytes each: seg:off). Overwriting any entry
+                        silently hijacks that interrupt.</div>
                 </div>
                 <div class="mem-row">
                     <div class="mem-addr">0x00400</div>
                     <div class="mem-size">256 B</div>
-                    <div class="mem-desc">BDA — BIOS Data Area (hardware state, timers, etc.)</div>
+                    <div class="mem-desc">BDA — BIOS Data Area. Stores COM port addresses, keyboard state, video mode,
+                        disk state, timer ticks since boot.</div>
                 </div>
                 <div class="mem-row">
                     <div class="mem-addr">0x00500</div>
                     <div class="mem-size">~30 KB</div>
-                    <div class="mem-desc">Free conventional memory (usable)</div>
+                    <div class="mem-desc">Free conventional memory. Stack typically grows down from 0x7C00 into this
+                        region during bootloader execution.</div>
                 </div>
                 <div class="mem-row highlight">
                     <div class="mem-addr">0x07C00</div>
                     <div class="mem-size">512 B</div>
-                    <div class="mem-desc">MBR loaded here by BIOS — your bootloader entry point</div>
+                    <div class="mem-desc">MBR loaded here by BIOS — your bootloader entry point. Bytes 446–509 are
+                        the partition table. Bytes 510–511 are the 0x55AA signature.</div>
                 </div>
                 <div class="mem-row">
                     <div class="mem-addr">0x07E00</div>
                     <div class="mem-size">~480 KB</div>
-                    <div class="mem-desc">Conventional memory — Stage 2 typically loads here</div>
+                    <div class="mem-desc">Conventional memory — Stage 2 typically loads here. Free for use until
+                        0x80000. This is the largest usable chunk below the 1 MB boundary.</div>
                 </div>
                 <div class="mem-row danger">
                     <div class="mem-addr">0x80000</div>
                     <div class="mem-size">128 KB</div>
-                    <div class="mem-desc">EBDA — Extended BIOS Data Area. Don't touch without asking first.</div>
+                    <div class="mem-desc">EBDA — Extended BIOS Data Area. Size varies per system. Query its base
+                        address from BDA offset 0x040E before assuming anything. Don't touch without asking first.</div>
                 </div>
                 <div class="mem-row danger">
                     <div class="mem-addr">0xA0000</div>
                     <div class="mem-size">384 KB</div>
-                    <div class="mem-desc">Video RAM, ROM, BIOS extensions — hardware-mapped, not RAM</div>
+                    <div class="mem-desc">Video RAM (0xA0000–0xBFFFF), ROM (0xC0000–0xEFFFF), BIOS extensions —
+                        hardware-mapped, not RAM. Writing to VGA framebuffer at 0xA0000 puts pixels on screen in
+                        real mode.</div>
                 </div>
                 <div class="mem-row">
                     <div class="mem-addr">0xF0000</div>
                     <div class="mem-size">64 KB</div>
-                    <div class="mem-desc">BIOS ROM — the firmware code itself</div>
+                    <div class="mem-desc">BIOS ROM — the firmware code itself. Mapped from SPI flash. Also contains
+                        ACPI tables and the DMI/SMBIOS data your OS queries for hardware info.</div>
+                </div>
+                <div class="mem-row">
+                    <div class="mem-addr">0x100000</div>
+                    <div class="mem-size">∞</div>
+                    <div class="mem-desc">Extended memory — begins at the 1 MB mark. Requires A20 to be enabled.
+                        This is where your kernel, page tables, and all physical RAM above 1 MB lives.</div>
                 </div>
             </div>
         </div>
