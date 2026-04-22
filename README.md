@@ -1,3 +1,4 @@
+https://dhrubo-10.github.io/Bootloader/
 # Bootloader Mastery
 
 I learned x86 bootloading and low-level PC internals years ago, rn practicing web dev by building a site around it.
